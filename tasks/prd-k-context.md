@@ -34,12 +34,21 @@ K-Context는 이미 존재하는 유명 K-Culture(예: 무한도전, 침착맨, 
 - [ ] `usePathname`, `useSearchParams` 변경을 감지하여 GA4 Virtual Pageview 이벤트가 Fire 됨.
 - [ ] 새로운 가상 페이지 진입 시, 컴포넌트 마운트를 통해 AdSense 슬롯이 규정에 맞게 새로 랜더링됨.
 
+### US-004: 유튜브 자막 파싱 및 데이터 파이프라인 수집
+**Description:** As a 데이터 관리자, I want 특정 유튜브 채널이나 재생목록의 자막을 로컬에서 일괄 추출하여 문맥 덩어리(Chunk)로 가공하고 DB에 적재해서 so that 사용자에게 의미 단위 검색이 원활하게 지원되는 인덱스를 제공하고 싶다.
+**Acceptance Criteria:**
+- [ ] 15초 단위의 문맥 청크 및 5초 오버랩(Overlap) 처리가 자동으로 이루어짐.
+- [ ] 형태소 분석기(NLP)를 통해 불용어가 제거된 핵심 키워드 배열이 생성되어 Supabase에 Batch Insert 됨.
+- [ ] (참고: [Data Pipeline Architecture](../docs/data-pipeline.md) 문서 참조)
+
 ## 4. Functional Requirements
-- **FR-1:** (데이터 파이프라인) 유튜브 자막 추출 시, NLP 라이브러리를 통해 명사/동사 원형 키워드를 추출하여 `keywords` 배열 컬럼에 저장해야 한다.
-- **FR-2:** (데이터 파이프라인) 문맥 단절 방지를 위해 15초 단위의 Sliding Window 청크를 생성하고, 청크 간에 5초의 오버랩(Overlap) 구간을 두어 DB에 저장해야 한다.
-- **FR-3:** (서버 연동) Supabase의 `pg_trgm` GIN 인덱스 및 Array Contains 쿼리를 이용하여 밀리초(ms) 단위의 텍스트 검색 API를 제공해야 한다.
-- **FR-4:** (UX) 모바일 브라우저에서 사용자가 검색 결과를 터치 시, `mute=1&autoplay=1` 옵션이 적용된 Iframe을 띄우고 커스텀 "Unmute" 오버레이를 표시한다.
-- **FR-5:** (데이터 수집) 목표 유튜브 데이터 수집 스크립트는 **검색 효율을 고려한 Mixed-Mode (지정된 채널 전체 순회 방식과 특정 레전드 모음집 플레이리스트 방식 혼용)** 로 구축하며, Supabase DB 사이즈 절감을 위해 전체 텍스트가 아닌 '검색 가능 키워드 배열' 위주로 적재하여 Batch Insert 해야 한다.
+- **FR-1:** (데이터 파이프라인 추출) 유튜브 자막 추출 시 2~5초 단위의 원본 텍스트를 파싱하는 스크립트를 구현해야 한다.
+- **FR-2:** (데이터 파이프라인 청킹) 문맥 단절 방지를 위해 15초 단위의 Sliding Window 청크를 생성하고, 청크 간에 5초의 오버랩(Overlap) 구간을 두어야 한다.
+- **FR-3:** (데이터 파이프라인 정제) NLP 라이브러리(KoNLPy 등)를 통해 청크 텍스트에서 불용어를 제거하고 명사/동사 원형 위주의 `keywords` 배열을 추출해야 한다.
+- **FR-4:** (DB 적재) 정제된 `keywords` 배열과 하이라이팅을 위한 `full_text`, `start_time`, `end_time`을 Supabase `video_chunks` 테이블에 일괄 적재(Batch Insert) 해야 한다.
+- **FR-5:** (서버 연동) Supabase의 `pg_trgm` GIN 인덱스 및 Array Contains 쿼리를 이용하여 밀리초(ms) 단위의 텍스트 검색 API를 제공해야 한다.
+- **FR-6:** (UX) 모바일 브라우저에서 사용자가 검색 결과를 터치 시, `mute=1&autoplay=1` 옵션이 적용된 Iframe을 띄우고 커스텀 "Unmute" 오버레이를 표시한다.
+- **FR-7:** (데이터 수집 전략) 목표 유튜브 데이터 수집 스크립트는 **검색 효율을 고려한 Mixed-Mode (지정된 채널 전체 순회 방식과 특정 레전드 모음집 플레이리스트 방식 혼용)** 로 구축하며, Supabase DB 사이즈 절감을 위해 전체 텍스트가 아닌 '검색 가능 키워드 배열' 위주로 적재하여 Batch Insert 해야 한다.
 
 ## 5. Non-Goals (Out of Scope)
 - 사용자의 자체적인 영상 업로드 포팅 및 호스팅 기능 (순수 유튜브 Iframe 임베드만 지원).
@@ -51,7 +60,7 @@ K-Context는 이미 존재하는 유명 K-Culture(예: 무한도전, 침착맨, 
 - **Architecture:** Vercel (Next.js App Router, SPA 형태) + Supabase (Postgres). 
 - **DB Model:** Overlapping Chunked 자막 단위의 Flat Table (`video_chunks` table).
 - **UX Constraint:** 사용자 마찰을 극도로 없애기 위해 MPA 방식은 배제하고, SPA 라우팅 기반의 가상 페이지 갱신(History API)으로 애널리틱스 목적을 달성한다.
-- **Ingestion Pipeline:** 로컬(개발자 PC) 환경에서 Node.js/Python CLI 스크립트 형태로 작성하며, YouTube Data API v3를 이용해 특정 채널 목록을 순회하여 자막을 크롤링/청킹한 후 리소스 부담 없이 Supabase에 직통 Insert 하는 구조.
+- **Ingestion Pipeline (상세 구조는 [Data Pipeline Architecture](../docs/data-pipeline.md) 참조):** 로컬(개발자 PC) 환경에서 Node.js/Python CLI 스크립트 형태로 작성하며, YouTube Data API v3를 이용해 특정 채널 목록을 순회하여 자막을 크롤링/청킹한 후 리소스 부담 없이 Supabase에 직통 Insert 하는 구조.
 
 ## 7. Technical Considerations
 - **Supabase Storage Size (DB 용량 한계 대응):** 
