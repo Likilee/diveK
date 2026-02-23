@@ -250,10 +250,11 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   const seekToTime = useCallback((seconds: number, shouldPlay = true) => {
     const player = playerRef.current;
     const target = Math.max(0, seconds);
-    if (hasPlayerMethod(player, "seekTo")) {
-      player.seekTo(target, true);
-      if (shouldPlay && hasPlayerMethod(player, "playVideo")) {
-        player.playVideo();
+    const seekResult = callPlayerMethod(player, "seekTo", [target, true]);
+
+    if (seekResult.called) {
+      if (shouldPlay) {
+        callPlayerMethod(player, "playVideo");
       }
       return;
     }
@@ -368,38 +369,32 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
     const syncUnmuteStateFromApiPlayer = () => {
       const apiPlayer = playerRef.current;
-      if (!hasPlayerMethod(apiPlayer, "isMuted")) {
+      const mutedResult = callPlayerMethod(apiPlayer, "isMuted");
+      if (!mutedResult.called || typeof mutedResult.value !== "boolean") {
         return;
       }
 
-      try {
-        const muted = apiPlayer.isMuted();
-        setUnmutedResultId((previous) => {
-          if (!muted) {
-            return previous === currentResultId ? previous : currentResultId;
-          }
-          if (previous === currentResultId) {
-            return null;
-          }
-          return previous;
-        });
-      } catch {
-        // noop
-      }
+      const muted = mutedResult.value;
+      setUnmutedResultId((previous) => {
+        if (!muted) {
+          return previous === currentResultId ? previous : currentResultId;
+        }
+        if (previous === currentResultId) {
+          return null;
+        }
+        return previous;
+      });
     };
 
     const pullCurrentTime = () => {
       const apiPlayer = playerRef.current;
 
-      if (hasPlayerMethod(apiPlayer, "getCurrentTime")) {
-        try {
-          const next = apiPlayer.getCurrentTime();
-          if (typeof next === "number" && Number.isFinite(next)) {
-            playbackTimeRef.current = next;
-            setPlaybackTime(next);
-          }
-        } catch {
-          // noop
+      const currentTimeResult = callPlayerMethod(apiPlayer, "getCurrentTime");
+      if (currentTimeResult.called && typeof currentTimeResult.value === "number") {
+        const next = currentTimeResult.value;
+        if (Number.isFinite(next)) {
+          playbackTimeRef.current = next;
+          setPlaybackTime(next);
         }
 
         syncUnmuteStateFromApiPlayer();
@@ -440,14 +435,8 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
                 return;
               }
 
-              try {
-                if (hasPlayerMethod(player, "mute")) {
-                  player.mute();
-                }
-                setUnmutedResultId((previous) => (previous === currentResultId ? null : previous));
-              } catch {
-                return;
-              }
+              callPlayerMethod(player, "mute");
+              setUnmutedResultId((previous) => (previous === currentResultId ? null : previous));
 
               setPlayerReadyTick((value) => value + 1);
               primeSeek();
@@ -571,14 +560,11 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
   const onUnmute = () => {
     const player = playerRef.current;
-    if (player && hasPlayerMethod(player, "unMute")) {
-      player.unMute();
-      if (hasPlayerMethod(player, "setVolume")) {
-        player.setVolume(100);
-      }
-      if (hasPlayerMethod(player, "playVideo")) {
-        player.playVideo();
-      }
+
+    const unmuteCalled = callPlayerMethod(player, "unMute").called;
+    if (unmuteCalled) {
+      callPlayerMethod(player, "setVolume", [100]);
+      callPlayerMethod(player, "playVideo");
     } else {
       postIframeCommand("unMute");
       postIframeCommand("setVolume", [100]);
@@ -1039,11 +1025,28 @@ function parseYouTubeMessage(rawData: unknown): {
   return null;
 }
 
-function hasPlayerMethod<K extends keyof YouTubePlayer>(
+function callPlayerMethod(
   player: YouTubePlayer | null,
-  method: K,
-): player is YouTubePlayer & Record<K, NonNullable<YouTubePlayer[K]>> {
-  return Boolean(player && typeof player[method] === "function");
+  method: keyof YouTubePlayer,
+  args: unknown[] = [],
+): { called: boolean; value: unknown } {
+  if (!player) {
+    return { called: false, value: null };
+  }
+
+  const candidate = (player as unknown as Record<string, unknown>)[method];
+  if (typeof candidate !== "function") {
+    return { called: false, value: null };
+  }
+
+  try {
+    return {
+      called: true,
+      value: (candidate as (...params: unknown[]) => unknown).apply(player, args),
+    };
+  } catch {
+    return { called: false, value: null };
+  }
 }
 
 function clampIndex(value: number, length: number): number {
