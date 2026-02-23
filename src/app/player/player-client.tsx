@@ -125,6 +125,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   const currentIndex = clampIndex(requestedIndex, results.length);
   const currentResult = results[currentIndex] ?? null;
   const currentResultId = currentResult?.id ?? null;
+  const currentVideoId = currentResult?.videoId ?? null;
   const currentStartTime = currentResult?.startTime ?? 0;
   const queryTerms = useMemo(() => tokenizeQuery(query), [query]);
   const normalizedQueryTerms = useMemo(
@@ -216,14 +217,14 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   }, [currentResultId]);
 
   useEffect(() => {
-    if (!currentResult || !playerHostRef.current) {
+    if (!currentVideoId || !currentResultId || !playerHostRef.current) {
       return;
     }
 
     let active = true;
     let syncTimer: number | null = null;
     let primeTimer: number | null = null;
-    const targetStart = Math.max(0, currentResult.startTime);
+    const targetStart = Math.max(0, currentStartTime);
     let primeAttempts = 0;
 
     playbackTimeRef.current = null;
@@ -238,7 +239,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
         playerRef.current = null;
 
         const player = new window.YT.Player(playerHostRef.current, {
-          videoId: currentResult.videoId,
+          videoId: currentVideoId,
           playerVars: {
             autoplay: 1,
             mute: 1,
@@ -324,7 +325,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
       playerRef.current?.destroy();
       playerRef.current = null;
     };
-  }, [currentResult, currentResult?.videoId, currentResultId, currentStartTime]);
+  }, [currentVideoId, currentResultId, currentStartTime]);
 
   const onUnmute = () => {
     const player = playerRef.current;
