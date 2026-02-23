@@ -15,6 +15,13 @@ pnpm install
 pnpm dev
 ```
 
+## CLI (Pipeline)
+```bash
+pnpm cli --help
+pnpm cli transcript fetch --video-id <VIDEO_ID>
+pnpm cli ingest run --video-id <VIDEO_ID_1> <VIDEO_ID_2>
+```
+
 ## Supabase Local
 ```bash
 pnpm supabase:start
@@ -23,7 +30,8 @@ pnpm supabase:reset
 ```
 
 ## Implemented (Frontend-first)
-- `/api/search` mock API (`q`, `limit`)
+- `/api/search` (Supabase RPC first, mock fallback)
+- `/api/chunks/[chunkId]/timed-tokens`
 - 검색 페이지(`/`) + 스니펫 하이라이트
 - 결과 카드 클릭 시 클라이언트 라우팅으로 `/player` 이동
 - 플레이어 페이지(`/player`)에서 `autoplay=1`, `mute=1`, `start` 적용
