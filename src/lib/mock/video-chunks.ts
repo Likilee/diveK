@@ -1,0 +1,68 @@
+import type { VideoChunk } from "@/types/search";
+
+export const MOCK_VIDEO_CHUNKS: VideoChunk[] = [
+  {
+    id: "mud-001",
+    videoId: "dQw4w9WgXcQ",
+    startTime: 84,
+    endTime: 99,
+    fullText: "야 이 장면 진짜 웃기다. 아까 그 멘트 다시 생각나서 빵 터졌다.",
+    keywords: ["장면", "진짜", "웃기다", "멘트", "생각나다", "빵", "터지다"],
+  },
+  {
+    id: "mud-002",
+    videoId: "5NV6Rdv1a3I",
+    startTime: 412,
+    endTime: 427,
+    fullText: "그거 레전드 밈 맞지? 다들 댓글에 그 대사만 적더라.",
+    keywords: ["레전드", "밈", "댓글", "대사", "적다"],
+  },
+  {
+    id: "mud-003",
+    videoId: "fJ9rUzIMcZQ",
+    startTime: 125,
+    endTime: 140,
+    fullText: "이 부분에서 갑자기 텐션 올라가면서 분위기가 완전 뒤집혔다.",
+    keywords: ["부분", "갑자기", "텐션", "올라가다", "분위기", "뒤집히다"],
+  },
+  {
+    id: "mud-004",
+    videoId: "9bZkp7q19f0",
+    startTime: 233,
+    endTime: 248,
+    fullText: "진짜 웃긴 포인트는 표정이랑 타이밍이 동시에 맞아떨어지는 순간이야.",
+    keywords: ["진짜", "웃기다", "포인트", "표정", "타이밍", "순간"],
+  },
+  {
+    id: "mud-005",
+    videoId: "YQHsXMglC9A",
+    startTime: 57,
+    endTime: 72,
+    fullText: "그 대사 한마디 때문에 밈이 퍼졌고 쇼츠에서도 계속 재사용됐다.",
+    keywords: ["대사", "한마디", "밈", "퍼지다", "쇼츠", "재사용"],
+  },
+  {
+    id: "mud-006",
+    videoId: "3JZ_D3ELwOQ",
+    startTime: 301,
+    endTime: 316,
+    fullText: "이 클립 찾으려고 하루 종일 검색했는데 드디어 원본을 찾았다.",
+    keywords: ["클립", "찾다", "하루", "검색", "드디어", "원본"],
+  },
+  {
+    id: "mud-007",
+    videoId: "kJQP7kiw5Fk",
+    startTime: 188,
+    endTime: 203,
+    fullText: "댓글에서 다들 이 장면이 무한 반복 재생되는 구간이라고 하더라.",
+    keywords: ["댓글", "장면", "무한", "반복", "재생", "구간"],
+  },
+  {
+    id: "mud-008",
+    videoId: "L_jWHffIx5E",
+    startTime: 509,
+    endTime: 524,
+    fullText: "너가 찾던 바로 그 말투야. 톤이랑 억양까지 완전히 똑같다.",
+    keywords: ["찾다", "말투", "톤", "억양", "완전", "똑같다"],
+  },
+];
