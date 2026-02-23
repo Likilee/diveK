@@ -1,0 +1,2 @@
+-- Seed intentionally empty for now.
+-- Add fixture data here when pipeline CLI is ready.
