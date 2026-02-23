@@ -24,8 +24,7 @@ export default function HomePage() {
 
     setErrorMessage(null);
     startTransition(() => {
-      const params = new URLSearchParams({ q: trimmedQuery, i: "0" });
-      router.push(`/player?${params.toString()}`);
+      router.push(`/player/${encodeURIComponent(trimmedQuery)}`);
     });
   };
 

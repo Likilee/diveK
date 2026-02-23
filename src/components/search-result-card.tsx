@@ -11,13 +11,12 @@ export function SearchResultCard({ result }: SearchResultCardProps) {
   const router = useRouter();
 
   const onNavigateToPlayer = () => {
-    const params = new URLSearchParams({
-      videoId: result.videoId,
-      start: result.startTime.toString(),
-      fromQuery: result.matchedTerms.join(" "),
-    });
+    const query = (result.matchedTerms.join(" ").trim() || result.snippet.slice(0, 40).trim()).trim();
+    if (!query) {
+      return;
+    }
 
-    router.push(`/player?${params.toString()}`);
+    router.push(`/player/${encodeURIComponent(query)}`);
   };
 
   return (

@@ -126,7 +126,6 @@ body {
 }
 
 .search-button,
-.unmute-button,
 .player-back {
   min-height: 48px;
   min-width: 48px;
@@ -145,8 +144,6 @@ body {
 
 .search-button:hover:not(:disabled),
 .search-button:focus-visible,
-.unmute-button:hover,
-.unmute-button:focus-visible,
 .player-back:hover,
 .player-back:focus-visible,
 .result-card:hover,
@@ -310,15 +307,6 @@ body {
   width: 100%;
   height: 100%;
   border: 0;
-}
-
-.unmute-button {
-  position: absolute;
-  right: 0.9rem;
-  bottom: 0.9rem;
-  background: color-mix(in srgb, var(--cta) 85%, black 15%);
-  color: white;
-  padding: 0.62rem 0.95rem;
 }
 
 .player-controls-bar {

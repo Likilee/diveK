@@ -1,14 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeForSearch, tokenizeQuery } from "@/lib/search/ranking";
 import type { SearchResult } from "@/types/search";
 
 type PlayerClientProps = {
   query: string;
-  requestedIndex: number;
+  initialIndex?: number;
   results: SearchResult[];
 };
 
@@ -54,17 +53,13 @@ const SEEK_PRIME_MAX_ATTEMPTS = 14;
 const SUBTITLE_LINE_MAX_TOKENS = 8;
 const SUBTITLE_LINE_MAX_CHARS = 30;
 const SUBTITLE_VISIBLE_LINES = 3;
-const SUBTITLE_RANGE_MARGIN_SECONDS = 0.35;
 const SUBTITLE_REMOTE_FETCH_THROTTLE_MS = 900;
+const MATCH_START_PRE_ROLL_SECONDS = 0.9;
 
 type YouTubePlayer = {
   destroy: () => void;
   playVideo: () => void;
   seekTo: (seconds: number, allowSeekAhead?: boolean) => void;
-  mute: () => void;
-  unMute: () => void;
-  isMuted: () => boolean;
-  setVolume: (volume: number) => void;
   getCurrentTime: () => number;
 };
 
@@ -127,23 +122,18 @@ function loadYouTubeIframeApi(): Promise<void> {
   return ytIframeApiPromise;
 }
 
-export function PlayerClient({ query, requestedIndex, results }: PlayerClientProps) {
-  const router = useRouter();
+export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const playerRef = useRef<YouTubePlayer | null>(null);
   const playbackTimeRef = useRef<number | null>(null);
   const subtitleFetchAtRef = useRef(0);
-  const lastStartAdjustmentRef = useRef<{ resultId: string; targetStart: number } | null>(null);
-  const [unmutedResultId, setUnmutedResultId] = useState<string | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(() => clampIndex(initialIndex, results.length));
   const [playbackTime, setPlaybackTime] = useState<number | null>(null);
-  const [playerReadyTick, setPlayerReadyTick] = useState(0);
   const [remoteTimedTokenState, setRemoteTimedTokenState] = useState<RemoteTimedTokenState | null>(null);
 
-  const currentIndex = clampIndex(requestedIndex, results.length);
   const currentResult = results[currentIndex] ?? null;
   const currentResultId = currentResult?.id ?? null;
   const currentVideoId = currentResult?.videoId ?? null;
-  const currentStartTime = currentResult?.startTime ?? 0;
   const queryTerms = useMemo(() => tokenizeQuery(query), [query]);
   const normalizedQueryTerms = useMemo(
     () => queryTerms.map((term) => normalizeForSearch(term)).filter(Boolean),
@@ -174,10 +164,6 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
     return currentChunkTimedTokens;
   }, [currentChunkTimedTokens, currentVideoId, remoteTimedTokenState]);
-  const subtitleRangeStart =
-    remoteTimedTokenState?.videoId === currentVideoId ? remoteTimedTokenState.startTime : currentResult?.startTime ?? 0;
-  const subtitleRangeEnd =
-    remoteTimedTokenState?.videoId === currentVideoId ? remoteTimedTokenState.endTime : currentResult?.endTime ?? 0;
   const preferredStartTime = useMemo(() => {
     if (!currentResult) {
       return 0;
@@ -188,7 +174,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
       return currentResult.startTime;
     }
 
-    const padded = Math.max(currentResult.startTime, matchedStart - 0.25);
+    const padded = Math.max(currentResult.startTime, matchedStart - MATCH_START_PRE_ROLL_SECONDS);
     return Math.min(padded, currentResult.endTime);
   }, [currentChunkTimedTokens, currentResult, normalizedQueryTerms]);
   const subtitleLines = useMemo(() => buildSubtitleLines(timedTokens), [timedTokens]);
@@ -200,7 +186,6 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
     () => pickVisibleSubtitleLines(subtitleLines, activeLineIndex, SUBTITLE_VISIBLE_LINES),
     [activeLineIndex, subtitleLines],
   );
-  const hasUnmuted = currentResult ? unmutedResultId === currentResult.id : false;
   const currentPlaybackTime = useMemo(() => {
     if (typeof playbackTime === "number" && Number.isFinite(playbackTime)) {
       return playbackTime;
@@ -216,7 +201,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
     const params = new URLSearchParams({
       autoplay: "1",
-      mute: "1",
+      mute: "0",
       start: Math.max(0, Math.floor(preferredStartTime)).toString(),
       enablejsapi: "1",
       playsinline: "1",
@@ -266,10 +251,6 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   }, [postIframeCommand]);
 
   useEffect(() => {
-    if (!currentResultId) {
-      return;
-    }
-
     const onMessage = (event: MessageEvent) => {
       if (!String(event.origin).includes("youtube")) {
         return;
@@ -285,19 +266,6 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
         playbackTimeRef.current = nextTime;
         setPlaybackTime(nextTime);
       }
-
-      const muted = message.info?.muted;
-      if (typeof muted === "boolean") {
-        setUnmutedResultId((previous) => {
-          if (!muted) {
-            return previous === currentResultId ? previous : currentResultId;
-          }
-          if (previous === currentResultId) {
-            return null;
-          }
-          return previous;
-        });
-      }
     };
 
     window.addEventListener("message", onMessage);
@@ -305,7 +273,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
     return () => {
       window.removeEventListener("message", onMessage);
     };
-  }, [currentResultId]);
+  }, []);
 
   useEffect(() => {
     if (!currentResultId || !currentVideoId || !currentResult) {
@@ -364,27 +332,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
     let primeAttempts = 0;
 
     playbackTimeRef.current = null;
-    lastStartAdjustmentRef.current = null;
     playerRef.current = null;
-
-    const syncUnmuteStateFromApiPlayer = () => {
-      const apiPlayer = playerRef.current;
-      const mutedResult = callPlayerMethod(apiPlayer, "isMuted");
-      if (!mutedResult.called || typeof mutedResult.value !== "boolean") {
-        return;
-      }
-
-      const muted = mutedResult.value;
-      setUnmutedResultId((previous) => {
-        if (!muted) {
-          return previous === currentResultId ? previous : currentResultId;
-        }
-        if (previous === currentResultId) {
-          return null;
-        }
-        return previous;
-      });
-    };
 
     const pullCurrentTime = () => {
       const apiPlayer = playerRef.current;
@@ -396,8 +344,6 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
           playbackTimeRef.current = next;
           setPlaybackTime(next);
         }
-
-        syncUnmuteStateFromApiPlayer();
       } else {
         postIframeCommand("getCurrentTime");
       }
@@ -423,7 +369,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
           videoId: currentVideoId,
           playerVars: {
             autoplay: 1,
-            mute: 1,
+            mute: 0,
             start: Math.max(0, Math.floor(targetStart)),
             playsinline: 1,
             rel: 0,
@@ -435,10 +381,6 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
                 return;
               }
 
-              callPlayerMethod(player, "mute");
-              setUnmutedResultId((previous) => (previous === currentResultId ? null : previous));
-
-              setPlayerReadyTick((value) => value + 1);
               primeSeek();
             },
           },
@@ -479,43 +421,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   }, [currentResultId, currentVideoId, postIframeCommand, preferredStartTime, seekToTime]);
 
   useEffect(() => {
-    if (!currentResultId || playerReadyTick === 0) {
-      return;
-    }
-
-    const previous = lastStartAdjustmentRef.current;
-    if (previous?.resultId === currentResultId && Math.abs(previous.targetStart - preferredStartTime) < 0.05) {
-      return;
-    }
-
-    const latestTime = playbackTimeRef.current;
-    const shouldAdjust =
-      preferredStartTime > currentStartTime + 0.8 &&
-      (typeof latestTime !== "number" || latestTime < preferredStartTime - 0.4);
-
-    if (shouldAdjust) {
-      seekToTime(preferredStartTime, true);
-    }
-
-    lastStartAdjustmentRef.current = {
-      resultId: currentResultId,
-      targetStart: preferredStartTime,
-    };
-  }, [currentResultId, currentStartTime, playerReadyTick, preferredStartTime, seekToTime]);
-
-  useEffect(() => {
     if (!currentVideoId || typeof playbackTime !== "number" || !Number.isFinite(playbackTime)) {
-      return;
-    }
-
-    const outsideLoadedRange = isPlaybackOutsideRange(
-      playbackTime,
-      subtitleRangeStart,
-      subtitleRangeEnd,
-      SUBTITLE_RANGE_MARGIN_SECONDS,
-    );
-
-    if (!outsideLoadedRange) {
       return;
     }
 
@@ -556,23 +462,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
     return () => {
       controller.abort();
     };
-  }, [currentVideoId, playbackTime, subtitleRangeEnd, subtitleRangeStart]);
-
-  const onUnmute = () => {
-    const player = playerRef.current;
-
-    const unmuteCalled = callPlayerMethod(player, "unMute").called;
-    if (unmuteCalled) {
-      callPlayerMethod(player, "setVolume", [100]);
-      callPlayerMethod(player, "playVideo");
-    } else {
-      postIframeCommand("unMute");
-      postIframeCommand("setVolume", [100]);
-      postIframeCommand("playVideo");
-    }
-
-    setUnmutedResultId(currentResult?.id ?? null);
-  };
+  }, [currentVideoId, playbackTime]);
 
   const onReplayCurrentClip = () => {
     if (!currentResult) {
@@ -587,12 +477,15 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   };
 
   const goToIndex = (index: number) => {
-    if (!query) {
+    const nextIndex = clampIndex(index, results.length);
+    if (nextIndex === currentIndex) {
       return;
     }
 
-    const params = new URLSearchParams({ q: query, i: index.toString() });
-    router.replace(`/player?${params.toString()}`);
+    setCurrentIndex(nextIndex);
+    setPlaybackTime(null);
+    subtitleFetchAtRef.current = 0;
+    setRemoteTimedTokenState(null);
   };
 
   if (!query) {
@@ -640,11 +533,6 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
             allow="autoplay; encrypted-media; picture-in-picture"
             allowFullScreen
           />
-          {!hasUnmuted && (
-            <button type="button" className="unmute-button" onClick={onUnmute}>
-              소리 켜기
-            </button>
-          )}
         </div>
 
         <div className="player-controls-bar">
@@ -998,28 +886,20 @@ function findMatchedTokenStart(tokens: TimedToken[], normalizedQueryTerms: strin
   return null;
 }
 
-function isPlaybackOutsideRange(time: number, start: number, end: number, margin: number): boolean {
-  if (!Number.isFinite(time) || !Number.isFinite(start) || !Number.isFinite(end)) {
-    return false;
-  }
-
-  return time < start - margin || time > end + margin;
-}
-
 function parseYouTubeMessage(rawData: unknown): {
   event?: string;
-  info?: { currentTime?: number; muted?: boolean };
+  info?: { currentTime?: number };
 } | null {
   if (typeof rawData === "string") {
     try {
-      return JSON.parse(rawData) as { event?: string; info?: { currentTime?: number; muted?: boolean } };
+      return JSON.parse(rawData) as { event?: string; info?: { currentTime?: number } };
     } catch {
       return null;
     }
   }
 
   if (typeof rawData === "object" && rawData !== null) {
-    return rawData as { event?: string; info?: { currentTime?: number; muted?: boolean } };
+    return rawData as { event?: string; info?: { currentTime?: number } };
   }
 
   return null;
