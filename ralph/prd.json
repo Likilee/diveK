@@ -117,22 +117,23 @@
       "title": "Build search-to-player UX with first-result auto-open",
       "description": "As a user, I want search submit to open the top result immediately so that I can verify context with minimal taps.",
       "acceptanceCriteria": [
-        "Search page submits query and navigates client-side to player route with `q` and first-result index params",
-        "Player view renders result position like `1 out of N` and supports prev/next result navigation",
+        "Search page submits query and navigates client-side to path-based player route `/player/{encodedQuery}` without index query params",
+        "Player route opens first result by default and keeps result index in local client state",
+        "Player view renders result position like `1 out of N` and supports prev/next result navigation without URL query-param sync",
         "Verify in browser using dev-browser skill",
         "Typecheck passes"
       ],
       "priority": 8,
       "passes": true,
-      "notes": ""
+      "notes": "Superseded the original q/i query-param index flow to reduce re-render/flicker risk and improve SPA navigation UX."
     },
     {
       "id": "US-009",
-      "title": "Add mobile-optimized player view with unmute control and timed subtitles",
+      "title": "Add mobile-optimized player view with immediate audio and timed subtitles",
       "description": "As a user, I want playback to start at the matched timestamp and show synchronized subtitles so that I can confirm the context immediately.",
       "acceptanceCriteria": [
-        "Player route initializes YouTube iframe with `autoplay=1`, `mute=1`, and the requested start time",
-        "Display a clear on-screen unmute control that enables sound on user interaction",
+        "Player route initializes YouTube iframe with `autoplay=1`, `mute=0`, and the requested start time",
+        "Do not render an on-screen unmute overlay button in the player UI",
         "Render large subtitle board and update active token highlight according to playback time",
         "Navigation from search to player occurs without full page reload or visible flicker",
         "Verify in browser using dev-browser skill",
@@ -140,7 +141,7 @@
       ],
       "priority": 9,
       "passes": true,
-      "notes": ""
+      "notes": "Audio starts unmuted by default when browser autoplay policy permits; no dedicated in-player unmute CTA."
     },
     {
       "id": "US-010",
