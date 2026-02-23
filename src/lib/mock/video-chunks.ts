@@ -1,6 +1,8 @@
-import type { VideoChunk } from "@/types/search";
+import type { TimedToken, VideoChunk } from "@/types/search";
 
-export const MOCK_VIDEO_CHUNKS: VideoChunk[] = [
+type SeedChunk = Omit<VideoChunk, "timedTokens">;
+
+const seed: SeedChunk[] = [
   {
     id: "mud-001",
     videoId: "dQw4w9WgXcQ",
@@ -66,3 +68,33 @@ export const MOCK_VIDEO_CHUNKS: VideoChunk[] = [
     keywords: ["찾다", "말투", "톤", "억양", "완전", "똑같다"],
   },
 ];
+
+export const MOCK_VIDEO_CHUNKS: VideoChunk[] = seed.map((chunk) => ({
+  ...chunk,
+  timedTokens: buildMockTimedTokens(chunk.fullText, chunk.startTime, chunk.endTime),
+}));
+
+function buildMockTimedTokens(text: string, startTime: number, endTime: number): TimedToken[] {
+  const tokens = text
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  if (tokens.length === 0) {
+    return [];
+  }
+
+  const duration = Math.max(endTime - startTime, 0.2);
+  const step = duration / tokens.length;
+
+  return tokens.map((token, index) => {
+    const tokenStart = startTime + step * index;
+    const tokenEnd = index === tokens.length - 1 ? endTime : tokenStart + step;
+
+    return {
+      token,
+      startTime: tokenStart,
+      endTime: tokenEnd,
+    };
+  });
+}

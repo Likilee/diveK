@@ -12,7 +12,7 @@ export default async function PlayerPage({ searchParams }: PlayerPageProps) {
   const params = await searchParams;
   const query = readFirst(params.q)?.trim() ?? "";
   const requestedIndex = sanitizeIndex(readFirst(params.i));
-  const results = searchChunks(query, 50);
+  const results = await searchChunks(query, 50);
 
   return <PlayerClient query={query} requestedIndex={requestedIndex} results={results} />;
 }

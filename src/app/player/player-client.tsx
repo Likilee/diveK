@@ -19,6 +19,17 @@ type TimedToken = {
   highlightable: boolean;
 };
 
+type TimedTokenApiRow = {
+  token: string;
+  start_time: number;
+  end_time: number;
+};
+
+type RemoteTimedTokenState = {
+  chunkId: string;
+  tokens: TimedToken[];
+};
+
 const TIME_POLL_INTERVAL_MS = 250;
 
 export function PlayerClient({ query, requestedIndex, results }: PlayerClientProps) {
@@ -26,18 +37,26 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [unmutedResultId, setUnmutedResultId] = useState<string | null>(null);
   const [playbackTime, setPlaybackTime] = useState<number | null>(null);
+  const [remoteTimedTokenState, setRemoteTimedTokenState] = useState<RemoteTimedTokenState | null>(null);
 
   const currentIndex = clampIndex(requestedIndex, results.length);
   const currentResult = results[currentIndex] ?? null;
   const currentResultId = currentResult?.id ?? null;
   const queryTerms = useMemo(() => tokenizeQuery(query), [query]);
-  const timedTokens = useMemo(() => {
+  const fallbackTimedTokens = useMemo(() => {
     if (!currentResult) {
       return [];
     }
 
     return buildTimedTokens(currentResult.fullText, currentResult.startTime, currentResult.endTime);
   }, [currentResult]);
+  const timedTokens = useMemo(() => {
+    if (remoteTimedTokenState?.chunkId === currentResultId && remoteTimedTokenState.tokens.length > 0) {
+      return remoteTimedTokenState.tokens;
+    }
+
+    return fallbackTimedTokens;
+  }, [currentResultId, fallbackTimedTokens, remoteTimedTokenState]);
   const hasUnmuted = currentResult ? unmutedResultId === currentResult.id : false;
   const currentPlaybackTime = useMemo(() => {
     if (!currentResult) {
@@ -86,6 +105,29 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
       return;
     }
 
+    let active = true;
+
+    fetch(`/api/chunks/${currentResultId}/timed-tokens`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) {
+          return null;
+        }
+
+        const payload = (await response.json()) as { timedTokens?: TimedTokenApiRow[] };
+        const parsed = parseApiTimedTokens(payload.timedTokens);
+
+        if (active) {
+          setRemoteTimedTokenState({ chunkId: currentResultId, tokens: parsed });
+        }
+
+        return null;
+      })
+      .catch(() => {
+        if (active) {
+          setRemoteTimedTokenState({ chunkId: currentResultId, tokens: [] });
+        }
+      });
+
     const pullCurrentTime = () => {
       const iframeWindow = iframeRef.current?.contentWindow;
 
@@ -107,6 +149,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
     const timer = window.setInterval(pullCurrentTime, TIME_POLL_INTERVAL_MS);
 
     return () => {
+      active = false;
       window.clearInterval(timer);
     };
   }, [currentResultId]);
@@ -394,6 +437,39 @@ function buildTimedTokens(text: string, startTime: number, endTime: number): Tim
   }
 
   return tokens;
+}
+
+function parseApiTimedTokens(value: unknown): TimedToken[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const parsed: TimedToken[] = [];
+
+  for (let index = 0; index < value.length; index += 1) {
+    const row = value[index];
+
+    if (typeof row !== "object" || row === null) {
+      continue;
+    }
+
+    const token = (row as TimedTokenApiRow).token;
+    const start = (row as TimedTokenApiRow).start_time;
+    const end = (row as TimedTokenApiRow).end_time;
+
+    if (typeof token !== "string" || typeof start !== "number" || typeof end !== "number") {
+      continue;
+    }
+
+    parsed.push({
+      text: index === 0 ? token : ` ${token}`,
+      start,
+      end,
+      highlightable: true,
+    });
+  }
+
+  return parsed;
 }
 
 function findLastHighlightableIndex(tokens: TimedToken[]): number {

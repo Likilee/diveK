@@ -7,7 +7,14 @@ export const dynamic = "force-dynamic";
 type SearchResponse = {
   query: string;
   count: number;
-  results: SearchResult[];
+  results: Array<
+    SearchResult & {
+      chunk_id: string;
+      video_id: string;
+      start_time: number;
+      end_time: number;
+    }
+  >;
 };
 
 export async function GET(request: NextRequest) {
@@ -23,12 +30,18 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const ranked = searchChunks(query, limit);
+  const ranked = await searchChunks(query, limit);
 
   return NextResponse.json<SearchResponse>({
     query,
     count: ranked.length,
-    results: ranked,
+    results: ranked.map((row) => ({
+      ...row,
+      chunk_id: row.chunkId,
+      video_id: row.videoId,
+      start_time: row.startTime,
+      end_time: row.endTime,
+    })),
   });
 }
 
