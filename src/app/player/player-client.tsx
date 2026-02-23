@@ -129,7 +129,7 @@ function loadYouTubeIframeApi(): Promise<void> {
 
 export function PlayerClient({ query, requestedIndex, results }: PlayerClientProps) {
   const router = useRouter();
-  const playerHostRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const playerRef = useRef<YouTubePlayer | null>(null);
   const playbackTimeRef = useRef<number | null>(null);
   const subtitleFetchAtRef = useRef(0);
@@ -209,18 +209,102 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
     return preferredStartTime;
   }, [playbackTime, preferredStartTime]);
 
-  const seekToTime = useCallback((seconds: number, shouldPlay = true) => {
-    const player = playerRef.current;
-    if (!player) {
+  const embedUrl = useMemo(() => {
+    if (!currentVideoId) {
+      return "";
+    }
+
+    const params = new URLSearchParams({
+      autoplay: "1",
+      mute: "1",
+      start: Math.max(0, Math.floor(preferredStartTime)).toString(),
+      enablejsapi: "1",
+      playsinline: "1",
+      rel: "0",
+    });
+
+    if (typeof window !== "undefined") {
+      params.set("origin", window.location.origin);
+    }
+
+    return `https://www.youtube.com/embed/${currentVideoId}?${params.toString()}`;
+  }, [currentVideoId, preferredStartTime]);
+
+  const postIframeCommand = useCallback((func: string, args: unknown[] = []) => {
+    const iframeWindow = iframeRef.current?.contentWindow;
+
+    if (!iframeWindow) {
       return;
     }
 
-    const target = Math.max(0, seconds);
-    player.seekTo(target, true);
-    if (shouldPlay) {
-      player.playVideo();
-    }
+    iframeWindow.postMessage(
+      JSON.stringify({
+        event: "command",
+        func,
+        args,
+      }),
+      "*",
+    );
   }, []);
+
+  const seekToTime = useCallback((seconds: number, shouldPlay = true) => {
+    const player = playerRef.current;
+    const target = Math.max(0, seconds);
+    if (player) {
+      player.seekTo(target, true);
+      if (shouldPlay) {
+        player.playVideo();
+      }
+      return;
+    }
+
+    postIframeCommand("seekTo", [target, true]);
+    if (shouldPlay) {
+      postIframeCommand("playVideo");
+    }
+  }, [postIframeCommand]);
+
+  useEffect(() => {
+    if (!currentResultId) {
+      return;
+    }
+
+    const onMessage = (event: MessageEvent) => {
+      if (!String(event.origin).includes("youtube")) {
+        return;
+      }
+
+      const message = parseYouTubeMessage(event.data);
+      if (!message || message.event !== "infoDelivery") {
+        return;
+      }
+
+      const nextTime = message.info?.currentTime;
+      if (typeof nextTime === "number" && Number.isFinite(nextTime)) {
+        playbackTimeRef.current = nextTime;
+        setPlaybackTime(nextTime);
+      }
+
+      const muted = message.info?.muted;
+      if (typeof muted === "boolean") {
+        setUnmutedResultId((previous) => {
+          if (!muted) {
+            return previous === currentResultId ? previous : currentResultId;
+          }
+          if (previous === currentResultId) {
+            return null;
+          }
+          return previous;
+        });
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+
+    return () => {
+      window.removeEventListener("message", onMessage);
+    };
+  }, [currentResultId]);
 
   useEffect(() => {
     if (!currentResultId || !currentVideoId || !currentResult) {
@@ -268,7 +352,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   }, [currentResult, currentResultId, currentVideoId]);
 
   useEffect(() => {
-    if (!currentVideoId || !currentResultId || !playerHostRef.current) {
+    if (!currentVideoId || !currentResultId || !iframeRef.current) {
       return;
     }
 
@@ -280,22 +364,72 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
     playbackTimeRef.current = null;
     lastStartAdjustmentRef.current = null;
+    playerRef.current = null;
+
+    const syncUnmuteStateFromApiPlayer = () => {
+      const apiPlayer = playerRef.current;
+      if (!apiPlayer) {
+        return;
+      }
+
+      try {
+        const muted = apiPlayer.isMuted();
+        setUnmutedResultId((previous) => {
+          if (!muted) {
+            return previous === currentResultId ? previous : currentResultId;
+          }
+          if (previous === currentResultId) {
+            return null;
+          }
+          return previous;
+        });
+      } catch {
+        // noop
+      }
+    };
+
+    const pullCurrentTime = () => {
+      const apiPlayer = playerRef.current;
+
+      if (apiPlayer) {
+        try {
+          const next = apiPlayer.getCurrentTime();
+          if (typeof next === "number" && Number.isFinite(next)) {
+            playbackTimeRef.current = next;
+            setPlaybackTime(next);
+          }
+        } catch {
+          // noop
+        }
+
+        syncUnmuteStateFromApiPlayer();
+      } else {
+        postIframeCommand("getCurrentTime");
+      }
+    };
+
+    const primeSeek = () => {
+      if (!active) {
+        return;
+      }
+
+      primeAttempts += 1;
+      seekToTime(targetStart, true);
+      pullCurrentTime();
+    };
 
     loadYouTubeIframeApi()
       .then(() => {
-        if (!active || !playerHostRef.current || !window.YT?.Player) {
+        if (!active || !iframeRef.current || !window.YT?.Player) {
           return;
         }
 
-        playerRef.current?.destroy();
-        playerRef.current = null;
-
-        const player = new window.YT.Player(playerHostRef.current, {
+        const player = new window.YT.Player(iframeRef.current, {
           videoId: currentVideoId,
           playerVars: {
             autoplay: 1,
             mute: 1,
-            start: Math.floor(targetStart),
+            start: Math.max(0, Math.floor(targetStart)),
             playsinline: 1,
             rel: 0,
             controls: 1,
@@ -320,66 +454,26 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
         });
 
         playerRef.current = player;
-
-        function pullCurrentTime() {
-          try {
-            const next = player.getCurrentTime();
-            if (typeof next === "number" && Number.isFinite(next)) {
-              playbackTimeRef.current = next;
-              setPlaybackTime(next);
-            }
-
-            const muted = player.isMuted();
-            setUnmutedResultId((previous) => {
-              if (!muted) {
-                return previous === currentResultId ? previous : currentResultId;
-              }
-
-              if (previous === currentResultId) {
-                return null;
-              }
-
-              return previous;
-            });
-          } catch {
-            // noop
-          }
-        }
-
-        function primeSeek() {
-          if (!active) {
-            return;
-          }
-
-          primeAttempts += 1;
-          try {
-            player.seekTo(targetStart, true);
-            player.playVideo();
-            pullCurrentTime();
-          } catch {
-            // noop
-          }
-        }
-
-        syncTimer = window.setInterval(pullCurrentTime, TIME_POLL_INTERVAL_MS);
-        primeTimer = window.setInterval(() => {
-          const latest = playbackTimeRef.current;
-          const synced = typeof latest === "number" && latest >= targetStart - 0.35;
-
-          if (synced || primeAttempts >= SEEK_PRIME_MAX_ATTEMPTS) {
-            if (primeTimer !== null) {
-              window.clearInterval(primeTimer);
-              primeTimer = null;
-            }
-            return;
-          }
-
-          primeSeek();
-        }, SEEK_PRIME_INTERVAL_MS);
-
-        primeSeek();
       })
       .catch(() => undefined);
+
+    syncTimer = window.setInterval(pullCurrentTime, TIME_POLL_INTERVAL_MS);
+    primeTimer = window.setInterval(() => {
+      const latest = playbackTimeRef.current;
+      const synced = typeof latest === "number" && latest >= targetStart - 0.35;
+
+      if (synced || primeAttempts >= SEEK_PRIME_MAX_ATTEMPTS) {
+        if (primeTimer !== null) {
+          window.clearInterval(primeTimer);
+          primeTimer = null;
+        }
+        return;
+      }
+
+      primeSeek();
+    }, SEEK_PRIME_INTERVAL_MS);
+
+    primeSeek();
 
     return () => {
       active = false;
@@ -389,10 +483,9 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
       if (primeTimer !== null) {
         window.clearInterval(primeTimer);
       }
-      playerRef.current?.destroy();
       playerRef.current = null;
     };
-  }, [currentResultId, currentVideoId, preferredStartTime]);
+  }, [currentResultId, currentVideoId, postIframeCommand, preferredStartTime, seekToTime]);
 
   useEffect(() => {
     if (!currentResultId || playerReadyTick === 0) {
@@ -476,13 +569,15 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
   const onUnmute = () => {
     const player = playerRef.current;
-    if (!player) {
-      return;
+    if (player) {
+      player.unMute();
+      player.setVolume(100);
+      player.playVideo();
+    } else {
+      postIframeCommand("unMute");
+      postIframeCommand("setVolume", [100]);
+      postIframeCommand("playVideo");
     }
-
-    player.unMute();
-    player.setVolume(100);
-    player.playVideo();
 
     setUnmutedResultId(currentResult?.id ?? null);
   };
@@ -544,7 +639,15 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
         </h1>
 
         <div className="player-frame-wrap">
-          <div ref={playerHostRef} className="player-frame" aria-label="YouTube clip player" />
+          <iframe
+            key={currentResultId ?? "player"}
+            ref={iframeRef}
+            title="YouTube clip player"
+            src={embedUrl}
+            className="player-frame"
+            allow="autoplay; encrypted-media; picture-in-picture"
+            allowFullScreen
+          />
           {!hasUnmuted && (
             <button type="button" className="unmute-button" onClick={onUnmute}>
               소리 켜기
@@ -909,6 +1012,25 @@ function isPlaybackOutsideRange(time: number, start: number, end: number, margin
   }
 
   return time < start - margin || time > end + margin;
+}
+
+function parseYouTubeMessage(rawData: unknown): {
+  event?: string;
+  info?: { currentTime?: number; muted?: boolean };
+} | null {
+  if (typeof rawData === "string") {
+    try {
+      return JSON.parse(rawData) as { event?: string; info?: { currentTime?: number; muted?: boolean } };
+    } catch {
+      return null;
+    }
+  }
+
+  if (typeof rawData === "object" && rawData !== null) {
+    return rawData as { event?: string; info?: { currentTime?: number; muted?: boolean } };
+  }
+
+  return null;
 }
 
 function clampIndex(value: number, length: number): number {
