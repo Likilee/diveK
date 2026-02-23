@@ -1,57 +1,135 @@
-# Data Ingestion Pipeline Architecture
+# Data Ingestion Pipeline Architecture (Timed Subtitle v2)
 
 ## 1. Overview
-이 문서는 유튜브 자막 원본 데이터를 K-Context의 검색 가능한 데이터베이스로 가공하고 적재하는 파이프라인의 아키텍처와 구체적인 데이터 변환 과정을 정의합니다. 파이프라인의 핵심 목표는 사용자가 자연스러운 문맥 단위로 영상을 검색하고 즉시 시청할 수 있도록 돕는 것입니다.
+이 문서는 K-Context 파이프라인을 **정확한 자막 타이밍 보존** 기준으로 재정의합니다.
+핵심 목표는 검색 정확도뿐 아니라, 플레이어에서 재생 시간에 맞춰 단어/구문 하이라이트를 안정적으로 제공하는 것입니다.
 
 ## 2. Core Principles
-1. **문맥 단절 방지 (Sliding Window):** 단순한 자막 단위가 아니라 의미가 이어지는 덩어리(Chunk)로 문맥을 묶어 검색 누락을 방비합니다.
-2. **검색 최적화 (NLP Keyword Extraction):** 사용자들의 다양한 검색어 변형(원형/파생어)을 커버하기 위해 형태소 분석을 통해 불용어를 제거하고 핵심 키워드 배열을 추출합니다.
-3. **저장소 효율화:** 무거운 영상 원본 없이 텍스트 배열과 메타데이터만 저장하여 Supabase 무료 티어 한계 내에서 수십만 건의 데이터를 유지합니다.
+1. **문맥 단절 방지 (Sliding Window):** 15초 청크 + 5초 오버랩으로 검색 누락을 줄입니다.
+2. **검색 최적화 (Keyword + Trigram):** 형태소 기반 키워드와 원문 유사도를 결합합니다.
+3. **저장소 효율화:** 영상 원본 없이 텍스트/메타데이터만 저장합니다.
+4. **타이밍 정밀도 보존 (Timing Fidelity):** 2~5초 원본 세그먼트의 `start_time/end_time`을 DB에 영구 저장합니다.
+5. **재처리 가능성:** 원본 세그먼트를 잃지 않고 청킹/키워드 로직만 재실행 가능해야 합니다.
 
 ## 3. Data Transformation Steps
 
 ### Step 1: Raw Transcript Extraction (원본 자막 추출)
-가장 먼저 유튜브에서 스크립트가 긁어오는 원초적인 데이터 형태입니다. 유튜브 자막은 보통 2~5초 단위로 아주 짧게 쪼개져 있습니다.
+YouTube에서 가져온 자막을 정규화하여 아래 구조로 고정합니다.
 
 ```json
 [
-  { "offset": 12.0, "duration": 3.0, "text": "야, 너 저번에 그거" },
-  { "offset": 15.0, "duration": 2.5, "text": "진짜 웃겼어." },
-  { "offset": 17.5, "duration": 4.0, "text": "아 빵터졌네 진짜." }
+  { "seq": 0, "start_time": 12.0, "end_time": 15.0, "duration": 3.0, "text": "야, 너 저번에 그거" },
+  { "seq": 1, "start_time": 15.0, "end_time": 17.5, "duration": 2.5, "text": "진짜 웃겼어." },
+  { "seq": 2, "start_time": 17.5, "end_time": 21.5, "duration": 4.0, "text": "아 빵터졌네 진짜." }
 ]
 ```
-이 상태 그대로 DB에 넣으면? 사용자가 "너 저번에 진짜 웃겼어"라고 하나의 문장처럼 이어서 검색했을 때, 실제 데이터는 두 개로 쪼개져 있어서 DB가 걸러내지 못하는 참사(검색 실패)가 발생합니다.
 
-### Step 2: Sliding Window Chunking (문맥 덩어리 만들기)
-이 짧은 자막들을 **15초 길이의 덩어리**로 합치되, 문맥을 잇기 위해 **5초씩 겹치게(Overlap)** 만듭니다.
+정규화 규칙:
+- 빈 문자열/공백 세그먼트는 제거
+- `end_time <= start_time`이면 해당 세그먼트 제외
+- `seq`는 영상 내 단조 증가
 
-- **Chunk 1 (0초~15초):** "야, 너 저번에 그거"
-- **Chunk 2 (10초~25초):** "야, 너 저번에 그거 진짜 웃겼어. 아 빵터졌네 진짜."
-- **Chunk 3 (20초~35초):** "아 빵터졌네 진짜. (다음 대사...)"
+### Step 2: Persist Canonical Segments (정규 세그먼트 저장)
+정규화된 세그먼트를 `transcript_segments`에 먼저 저장합니다.
 
-위 예시처럼 문장이 겹치면서 자연스럽게 이어지도록 가공합니다. 보통 이 과정은 배열을 순회하면서 `offset`을 기준으로 합칩니다.
+이 단계가 있어야:
+- 하이라이트 정확도 개선을 위한 재가공 가능
+- 청크 로직 변경 시 원본 재수집 없이 재생성 가능
 
-### Step 3: NLP Keyword Extraction (NLP 키워드 추출)
-사용자들이 "진짜 웃김", "웃기다" 등 변형해서 검색하는 것도 잡아내기 위해, **Chunk 2**의 텍스트에서 불용어("아", "저번에", "그거", "네" 등)를 제거하고 명사와 동사(원형)만 추출합니다. (Python의 KoNLPy 등 활용)
+### Step 3: Sliding Window Chunking (문맥 청크 생성)
+`transcript_segments`를 기반으로 15초/5초 오버랩 청크를 생성합니다.
+각 청크는 단순 `full_text`뿐 아니라 **세그먼트 범위**와 **타이밍 토큰**을 함께 저장합니다.
 
-- **원본 텍스트:** `"야, 너 저번에 그거 진짜 웃겼어. 아 빵터졌네 진짜."`
-- **정제된 키워드 배열:** `["야", "너", "진짜", "웃기다", "빵터지다"]`
+청크 출력 예시:
 
-### Step 4: Final DB Insertion (Supabase 적재)
-가공된 데이터를 Supabase DB의 `video_chunks` 테이블에 1줄짜리 레코드 형태로 Insert 합니다 (Batch Rate-limit 고려).
+```json
+{
+  "video_id": "abc123",
+  "start_time": 10.0,
+  "end_time": 25.0,
+  "segment_start_seq": 0,
+  "segment_end_seq": 4,
+  "full_text": "야, 너 저번에 그거 진짜 웃겼어. 아 빵터졌네 진짜.",
+  "timed_tokens": [
+    { "token": "야", "start_time": 12.0, "end_time": 12.4 },
+    { "token": "진짜", "start_time": 15.1, "end_time": 15.7 }
+  ]
+}
+```
 
+### Step 4: NLP Keyword Extraction (키워드 추출)
+청크 단위 `full_text`에서 불용어 제거 + 명사/동사 원형 추출로 `keywords`를 만듭니다.
+
+예시:
+- 원문: `"야, 너 저번에 그거 진짜 웃겼어. 아 빵터졌네 진짜."`
+- 키워드: `["야", "너", "진짜", "웃기다", "빵터지다"]`
+
+### Step 5: Final DB Upsert (적재)
+순서:
+1. `transcript_segments` upsert
+2. `video_chunks` upsert
+
+배치 삽입 + 재시도(backoff) + 체크포인트 재개를 적용합니다.
+
+## 4. Database Model (Supabase)
+
+### 4.1 `transcript_segments` (정규 원본 레이어)
 | Column | Type | 설명 |
 | :--- | :--- | :--- |
-| `id` | UUID (PK) | 고유 레코드 식별자 |
-| `video_id` | String | 매칭되는 유튜브 영상 ID |
-| `start_time` | Float | 영상 재생 타깃 시작 초 (10초 타임라인 이동용) |
-| `end_time` | Float | 청크 종료 시간 |
-| `keywords` | Array(String) | **GIN 인덱스를 걸어 실제로 검색할 타겟 배열** (`["야", "너", "진짜", "웃기다", "빵터지다"]`) |
-| `full_text` | String | UI에 보여줄 하이라이팅 원문 (`"야, 너 저번에 그거 진짜 웃겼어..."`) |
+| `id` | BIGSERIAL PK | 세그먼트 ID |
+| `video_id` | TEXT | 유튜브 영상 ID |
+| `seq` | INT | 영상 내 세그먼트 순번 |
+| `start_time` | DOUBLE PRECISION | 세그먼트 시작 초 |
+| `end_time` | DOUBLE PRECISION | 세그먼트 종료 초 |
+| `duration` | DOUBLE PRECISION | `end_time - start_time` |
+| `text` | TEXT | 세그먼트 원문 |
+| `created_at` | TIMESTAMPTZ | 적재 시각 |
 
-## 4. End-to-End User Scenario
-1. **Local Pipeline**: 개발자 PC에 있는 Python 봇이 특정 채널의 동영상을 순회하며 1단계~3단계를 백그라운드에서 자동 가공하여 Supabase에 한 방에 쏩니다 (Batch Insert).
-2. **User Target**: 사용자가 웹 화면에서 "진짜 웃긴거"라고 **검색**합니다.
-3. **Frontend Request**: "진짜", "웃기다"로 검색어가 형태소 분리되어 백엔드/Supabase로 쿼리가 전송됩니다.
-4. **DB Query**: GIN 인덱스와 Array Contains 연산을 바탕으로 `keywords` 배열에 해당 키워드가 포함된 청크를 밀리초 내에 스캔합니다.
-5. **Playback Experience**: 검색 내역에서 결과 카드의 썸네일/버튼을 누르면 브라우저의 `<iframe autoplay=1 mute=1>` 속성을 이용해 곧바로 `start_time`인 10초 타임라인부터 영상을 시청할 수 있습니다.
+인덱스/제약:
+- `UNIQUE(video_id, seq)`
+- `INDEX(video_id, start_time)`
+
+### 4.2 `video_chunks` (검색/재생 최적화 레이어)
+| Column | Type | 설명 |
+| :--- | :--- | :--- |
+| `id` | UUID PK | 청크 ID |
+| `video_id` | TEXT | 유튜브 영상 ID |
+| `start_time` | DOUBLE PRECISION | 청크 시작 초 |
+| `end_time` | DOUBLE PRECISION | 청크 종료 초 |
+| `segment_start_seq` | INT | 청크 첫 세그먼트 순번 |
+| `segment_end_seq` | INT | 청크 마지막 세그먼트 순번 |
+| `keywords` | TEXT[] | 검색 키워드 배열 |
+| `full_text` | TEXT | 청크 원문 |
+| `timed_tokens` | JSONB | 토큰별 타이밍 배열 |
+| `created_at` | TIMESTAMPTZ | 적재 시각 |
+
+인덱스:
+- `pg_trgm` + `GIN(full_text gin_trgm_ops)`
+- `GIN(keywords)`
+- `INDEX(video_id, start_time)`
+
+## 5. API/Playback Contract
+검색 API 응답은 최소 아래 필드를 반환합니다.
+- `chunk_id`, `video_id`, `start_time`, `end_time`, `snippet`, `score`
+
+플레이어는 `chunk_id` 기반으로 `timed_tokens`를 받아 재생 시간과 동기화된 하이라이트를 수행합니다.
+
+## 6. Checkpoint and Resume
+체크포인트는 로컬 파일(`/.cache/ingestion-checkpoint.json`)에 저장합니다.
+
+권장 필드:
+```json
+{
+  "last_video_id": "abc123",
+  "last_segment_seq": 418,
+  "last_chunk_start_time": 520.0,
+  "updated_at": "2026-02-23T09:00:00Z"
+}
+```
+
+## 7. End-to-End User Scenario
+1. 로컬 CLI가 영상 자막을 수집해 `transcript_segments`에 저장
+2. 청킹/NLP 처리 후 `video_chunks`에 적재
+3. 사용자가 검색하면 `video_chunks`에서 고속 매칭
+4. 결과 선택 시 플레이어는 `timed_tokens`를 사용해 단어 하이라이트 동기화
+5. UI는 재생 시간 변화에 맞춰 활성 토큰을 이동 표시

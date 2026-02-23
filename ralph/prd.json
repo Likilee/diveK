@@ -5,12 +5,14 @@
   "userStories": [
     {
       "id": "US-001",
-      "title": "Create video_chunks schema and search indexes",
-      "description": "As a developer, I want a Supabase schema for chunked subtitles so that search data can be stored and queried efficiently.",
+      "title": "Create transcript_segments + video_chunks schema and search indexes",
+      "description": "As a developer, I want a Supabase schema that preserves raw subtitle segment timing and chunk-level search data so that search and playback highlighting are both reliable.",
       "acceptanceCriteria": [
-        "Create `video_chunks` table with `id`, `video_id`, `start_time`, `end_time`, `keywords`, and `full_text` columns",
-        "Enable `pg_trgm` and add a trigram index for text search on `full_text`",
-        "Add GIN index on `keywords` for array overlap/contains queries",
+        "Create `transcript_segments` table with `id`, `video_id`, `seq`, `start_time`, `end_time`, `duration`, and `text` columns",
+        "Create `video_chunks` table with `id`, `video_id`, `start_time`, `end_time`, `segment_start_seq`, `segment_end_seq`, `keywords`, `full_text`, and `timed_tokens` columns",
+        "Enable `pg_trgm` and add trigram index on `video_chunks.full_text`",
+        "Add GIN index on `video_chunks.keywords` and btree indexes on `(video_id, start_time)`",
+        "Add uniqueness constraint `UNIQUE(video_id, seq)` on `transcript_segments`",
         "Migration applies successfully on a clean database",
         "Typecheck passes"
       ],
@@ -21,10 +23,11 @@
     {
       "id": "US-002",
       "title": "Implement raw transcript fetch command",
-      "description": "As a data operator, I want a CLI command to fetch raw YouTube transcript segments so that ingestion can start from normalized subtitle data.",
+      "description": "As a data operator, I want a CLI command to fetch raw YouTube transcript segments so that ingestion starts from canonical timing-aware subtitle rows.",
       "acceptanceCriteria": [
         "Add a CLI command that fetches transcript segments for a given video ID",
-        "Normalize each segment to `{ offset, duration, text }` and skip empty text rows",
+        "Normalize each segment to `{ seq, start_time, end_time, duration, text }` and skip empty text rows",
+        "Reject invalid rows where `end_time <= start_time` and keep monotonic ordering by `seq`",
         "Return a clear error and non-zero exit code when captions are unavailable",
         "Tests pass",
         "Typecheck passes"
@@ -35,11 +38,12 @@
     },
     {
       "id": "US-003",
-      "title": "Build 15-second sliding-window chunker",
-      "description": "As a data operator, I want transcript segments chunked with overlap so that user queries can match full conversational context.",
+      "title": "Build 15-second sliding-window chunker with timing payload",
+      "description": "As a data operator, I want transcript segments chunked with overlap and timing payloads so that UI can render accurate, time-synced subtitle highlights.",
       "acceptanceCriteria": [
         "Transform raw segments into 15-second chunks with 5-second overlap",
-        "Each chunk includes `start_time`, `end_time`, and concatenated `full_text`",
+        "Each chunk includes `start_time`, `end_time`, concatenated `full_text`, `segment_start_seq`, and `segment_end_seq`",
+        "Generate deterministic `timed_tokens` payload for each chunk to support playback-time highlighting",
         "Unit tests cover boundary behavior and final partial-window handling",
         "Tests pass",
         "Typecheck passes"
@@ -68,9 +72,9 @@
       "title": "Implement batch ingestion with checkpoint resume",
       "description": "As a data operator, I want end-to-end batch ingestion with resume support so that large channel imports are reliable and cost-efficient.",
       "acceptanceCriteria": [
-        "Create pipeline command that runs fetch -> chunk -> keyword extraction -> Supabase batch insert",
-        "Batch size is configurable and retry/backoff is applied for transient insert failures",
-        "Persist local checkpoint state and resume from last successful item on rerun",
+        "Create pipeline command that runs fetch -> normalize -> upsert transcript_segments -> chunk -> keyword extraction -> upsert video_chunks",
+        "Batch size is configurable and retry/backoff is applied for transient insert failures on both tables",
+        "Persist local checkpoint state and resume from last successful video/segment on rerun",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -85,7 +89,7 @@
       "acceptanceCriteria": [
         "Add search endpoint that accepts user query text and returns matching video chunks",
         "Ranking combines keyword overlap on `keywords` with trigram similarity on `full_text`",
-        "Response includes `video_id`, `start_time`, and snippet text for UI rendering",
+        "Response includes `chunk_id`, `video_id`, `start_time`, `end_time`, and snippet text for UI rendering",
         "Tests pass",
         "Typecheck passes"
       ],
@@ -95,13 +99,13 @@
     },
     {
       "id": "US-007",
-      "title": "Build search results UI with highlighted snippets",
-      "description": "As a user, I want to search by remembered words and see highlighted matching lines so that I can recognize the correct clip before opening it.",
+      "title": "Create playback timing payload API",
+      "description": "As a user, I want timing payload for a selected chunk so that subtitle words can be highlighted in sync with playback time.",
       "acceptanceCriteria": [
-        "Search page includes query input and renders a result card list from the search API",
-        "Each result card shows a snippet with matched terms rendered in bold or marked styling",
-        "Selecting a result performs client-side navigation to the player route with video and time params",
-        "Verify in browser using dev-browser skill",
+        "Add endpoint that returns `timed_tokens` for a given `chunk_id`",
+        "Payload contract includes token text with absolute `start_time` and `end_time`",
+        "Endpoint handles missing chunk IDs with clear 404 response",
+        "Tests pass",
         "Typecheck passes"
       ],
       "priority": 7,
@@ -110,12 +114,11 @@
     },
     {
       "id": "US-008",
-      "title": "Add mobile-optimized player view with unmute control",
-      "description": "As a user, I want playback to start at the matched timestamp immediately on mobile so that I can confirm context with minimal taps.",
+      "title": "Build search-to-player UX with first-result auto-open",
+      "description": "As a user, I want search submit to open the top result immediately so that I can verify context with minimal taps.",
       "acceptanceCriteria": [
-        "Player route initializes YouTube iframe with `autoplay=1`, `mute=1`, and the requested start time",
-        "Display a clear on-screen unmute control that enables sound on user interaction",
-        "Navigation from search to player occurs without full page reload or visible flicker",
+        "Search page submits query and navigates client-side to player route with `q` and first-result index params",
+        "Player view renders result position like `1 out of N` and supports prev/next result navigation",
         "Verify in browser using dev-browser skill",
         "Typecheck passes"
       ],
@@ -125,6 +128,22 @@
     },
     {
       "id": "US-009",
+      "title": "Add mobile-optimized player view with unmute control and timed subtitles",
+      "description": "As a user, I want playback to start at the matched timestamp and show synchronized subtitles so that I can confirm the context immediately.",
+      "acceptanceCriteria": [
+        "Player route initializes YouTube iframe with `autoplay=1`, `mute=1`, and the requested start time",
+        "Display a clear on-screen unmute control that enables sound on user interaction",
+        "Render large subtitle board and update active token highlight according to playback time",
+        "Navigation from search to player occurs without full page reload or visible flicker",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
       "title": "Track SPA virtual pageviews and refresh ad slots",
       "description": "As an operator, I want route-level analytics and ad refresh on SPA transitions so that funnel analysis and ad monetization stay accurate.",
       "acceptanceCriteria": [
@@ -134,7 +153,7 @@
         "Verify in browser using dev-browser skill",
         "Typecheck passes"
       ],
-      "priority": 9,
+      "priority": 10,
       "passes": false,
       "notes": ""
     }
