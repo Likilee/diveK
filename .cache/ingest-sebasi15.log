@@ -1,0 +1,87 @@
+
+> kcontext@0.1.0 cli /Users/kihoon/Documents/Project/kcontext
+> tsx src/cli/index.ts ingest run --video-ids-file .cache/sebasi15-video-ids.txt --batch-size 200 --checkpoint .cache/ingestion-sebasi15.json --max-retries 2 --retry-base-ms 200
+
+[dotenv@17.3.1] injecting env (4) from .env.local -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🛡️ auth for agents: https://vestauth.com
+[start] iEAfubT7I0c
+[error] iEAfubT7I0c No usable transcript rows for video iEAfubT7I0c
+[start] hBEqerShrWw
+[error] hBEqerShrWw No usable transcript rows for video hBEqerShrWw
+[start] i7MZVhsCJcU
+[error] i7MZVhsCJcU No usable transcript rows for video i7MZVhsCJcU
+[start] 04y5R6N8m0M
+[error] 04y5R6N8m0M No usable transcript rows for video 04y5R6N8m0M
+[start] bTb2Y9n7Es4
+[error] bTb2Y9n7Es4 No usable transcript rows for video bTb2Y9n7Es4
+[start] kp8L0RFnhZg
+[error] kp8L0RFnhZg No usable transcript rows for video kp8L0RFnhZg
+[start] M_WAxmVKz54
+[error] M_WAxmVKz54 No usable transcript rows for video M_WAxmVKz54
+[start] uZjEeuxJ4XY
+[error] uZjEeuxJ4XY No usable transcript rows for video uZjEeuxJ4XY
+[start] WPmxulJTKZc
+[error] WPmxulJTKZc No usable transcript rows for video WPmxulJTKZc
+[start] iinjbdJLSas
+[error] iinjbdJLSas No usable transcript rows for video iinjbdJLSas
+[start] qNnBA96Ys9o
+[error] qNnBA96Ys9o No usable transcript rows for video qNnBA96Ys9o
+[start] bynU81TSbDU
+[error] bynU81TSbDU No usable transcript rows for video bynU81TSbDU
+[start] bxy16hN4AJE
+[error] bxy16hN4AJE No usable transcript rows for video bxy16hN4AJE
+[start] gkmPuuCNXfc
+[error] gkmPuuCNXfc No usable transcript rows for video gkmPuuCNXfc
+[start] XAJr8X1-9ag
+[error] XAJr8X1-9ag No usable transcript rows for video XAJr8X1-9ag
+[start] YhdMrelOre0
+[error] YhdMrelOre0 No usable transcript rows for video YhdMrelOre0
+[start] Aj1lWvY6mxk
+[error] Aj1lWvY6mxk No usable transcript rows for video Aj1lWvY6mxk
+[start] f630D5j4otA
+[error] f630D5j4otA No usable transcript rows for video f630D5j4otA
+[start] vkZZSTCd880
+[error] vkZZSTCd880 No usable transcript rows for video vkZZSTCd880
+[start] sa2VmLg3Q04
+[error] sa2VmLg3Q04 No usable transcript rows for video sa2VmLg3Q04
+[start] gWWxg79PXlQ
+[error] gWWxg79PXlQ No usable transcript rows for video gWWxg79PXlQ
+[start] YxQKcSHfz24
+[error] YxQKcSHfz24 No usable transcript rows for video YxQKcSHfz24
+[start] baXboLRfFqM
+[error] baXboLRfFqM No usable transcript rows for video baXboLRfFqM
+[start] bMXo6JQn4o4
+[error] bMXo6JQn4o4 No usable transcript rows for video bMXo6JQn4o4
+[start] cnYXHXadH28
+[error] cnYXHXadH28 No usable transcript rows for video cnYXHXadH28
+[start] CeC3T-nCO_M
+[error] CeC3T-nCO_M No usable transcript rows for video CeC3T-nCO_M
+[start] MEY5HBpLoLA
+[error] MEY5HBpLoLA No usable transcript rows for video MEY5HBpLoLA
+[start] rnZjuk14-Sk
+[error] rnZjuk14-Sk No usable transcript rows for video rnZjuk14-Sk
+[start] U5t-YTtLg_0
+[error] U5t-YTtLg_0 No usable transcript rows for video U5t-YTtLg_0
+[start] m0t-ovRfSEg
+[error] m0t-ovRfSEg No usable transcript rows for video m0t-ovRfSEg
+[start] nhNGqexQ2RM
+[error] nhNGqexQ2RM No usable transcript rows for video nhNGqexQ2RM
+[start] 9lwj5CBxkRg
+[error] 9lwj5CBxkRg No usable transcript rows for video 9lwj5CBxkRg
+[start] 37wMJXp6YVU
+[error] 37wMJXp6YVU No usable transcript rows for video 37wMJXp6YVU
+[start] adkAELmp3P8
+[error] adkAELmp3P8 No usable transcript rows for video adkAELmp3P8
+[start] oOeMeV8fuYI
+[error] oOeMeV8fuYI No usable transcript rows for video oOeMeV8fuYI
+[start] bKbo8Rr5Y_0
+[error] bKbo8Rr5Y_0 No usable transcript rows for video bKbo8Rr5Y_0
+[start] yvKayh1wzCg
+[error] yvKayh1wzCg No usable transcript rows for video yvKayh1wzCg
+[start] HyrIYjMMHe8
+[error] HyrIYjMMHe8 No usable transcript rows for video HyrIYjMMHe8
+[start] H9NClKPAlHs
+[error] H9NClKPAlHs No usable transcript rows for video H9NClKPAlHs
+[start] TWZjyKNYG7o
+[error] TWZjyKNYG7o No usable transcript rows for video TWZjyKNYG7o
+[start] OIx_OOcjy8U

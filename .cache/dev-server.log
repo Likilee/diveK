@@ -1,0 +1,16 @@
+
+> kcontext@0.1.0 dev /Users/kihoon/Documents/Project/kcontext
+> next dev
+
+⚠ Port 3000 is in use by process 87921, using available port 3001 instead.
+▲ Next.js 16.1.6 (Turbopack)
+- Local:         http://localhost:3001
+- Network:       http://192.168.219.106:3001
+- Environments: .env.local
+
+✓ Starting...
+✓ Ready in 469ms
+ GET /api/videos/JY-ZHMDvzAE/timed-tokens?time=2249.735 200 in 246ms
+[dotenv@17.3.1] injecting env (0) from .env.local -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.3.1] injecting env (0) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+ GET /api/videos/W2YxvvA0Ud4/timed-tokens?time=307.307 200 in 13ms (compile: 3ms, render: 9ms)
