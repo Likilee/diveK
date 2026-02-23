@@ -250,9 +250,9 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   const seekToTime = useCallback((seconds: number, shouldPlay = true) => {
     const player = playerRef.current;
     const target = Math.max(0, seconds);
-    if (player) {
+    if (hasPlayerMethod(player, "seekTo")) {
       player.seekTo(target, true);
-      if (shouldPlay) {
+      if (shouldPlay && hasPlayerMethod(player, "playVideo")) {
         player.playVideo();
       }
       return;
@@ -368,7 +368,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
     const syncUnmuteStateFromApiPlayer = () => {
       const apiPlayer = playerRef.current;
-      if (!apiPlayer) {
+      if (!hasPlayerMethod(apiPlayer, "isMuted")) {
         return;
       }
 
@@ -391,7 +391,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
     const pullCurrentTime = () => {
       const apiPlayer = playerRef.current;
 
-      if (apiPlayer) {
+      if (hasPlayerMethod(apiPlayer, "getCurrentTime")) {
         try {
           const next = apiPlayer.getCurrentTime();
           if (typeof next === "number" && Number.isFinite(next)) {
@@ -441,7 +441,9 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
               }
 
               try {
-                player.mute();
+                if (hasPlayerMethod(player, "mute")) {
+                  player.mute();
+                }
                 setUnmutedResultId((previous) => (previous === currentResultId ? null : previous));
               } catch {
                 return;
@@ -569,10 +571,14 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
   const onUnmute = () => {
     const player = playerRef.current;
-    if (player) {
+    if (player && hasPlayerMethod(player, "unMute")) {
       player.unMute();
-      player.setVolume(100);
-      player.playVideo();
+      if (hasPlayerMethod(player, "setVolume")) {
+        player.setVolume(100);
+      }
+      if (hasPlayerMethod(player, "playVideo")) {
+        player.playVideo();
+      }
     } else {
       postIframeCommand("unMute");
       postIframeCommand("setVolume", [100]);
@@ -1031,6 +1037,13 @@ function parseYouTubeMessage(rawData: unknown): {
   }
 
   return null;
+}
+
+function hasPlayerMethod<K extends keyof YouTubePlayer>(
+  player: YouTubePlayer | null,
+  method: K,
+): player is YouTubePlayer & Record<K, NonNullable<YouTubePlayer[K]>> {
+  return Boolean(player && typeof player[method] === "function");
 }
 
 function clampIndex(value: number, length: number): number {
