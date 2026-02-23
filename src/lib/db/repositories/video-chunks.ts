@@ -14,6 +14,14 @@ export type SearchChunkRow = {
   score: number;
 };
 
+export type TimedChunkWindow = {
+  chunkId: string;
+  videoId: string;
+  startTime: number;
+  endTime: number;
+  timedTokens: TimedToken[];
+};
+
 export async function upsertTranscriptSegments(
   client: SupabaseClient,
   segments: CanonicalTranscriptSegment[],
@@ -123,6 +131,101 @@ export async function getChunkTimedTokens(
   }
 
   return parseTimedTokens(data);
+}
+
+export async function getVideoChunkTimedTokensAtTime(
+  client: SupabaseClient,
+  videoId: string,
+  time: number,
+): Promise<TimedChunkWindow | null> {
+  const { data: withinRows, error: withinError } = await client
+    .from("video_chunks")
+    .select("id, video_id, start_time, end_time, timed_tokens")
+    .eq("video_id", videoId)
+    .lte("start_time", time)
+    .gte("end_time", time)
+    .order("start_time", { ascending: false })
+    .limit(1);
+
+  if (withinError) {
+    throw new Error(`Failed to load timed chunk row: ${withinError.message}`);
+  }
+
+  const within = ((withinRows ?? [])[0] ?? null) as TimedChunkRow | null;
+
+  if (within) {
+    return mapTimedChunkRow(within);
+  }
+
+  const { data: beforeRows, error: beforeError } = await client
+    .from("video_chunks")
+    .select("id, video_id, start_time, end_time, timed_tokens")
+    .eq("video_id", videoId)
+    .lte("start_time", time)
+    .order("start_time", { ascending: false })
+    .limit(1);
+
+  if (beforeError) {
+    throw new Error(`Failed to load timed chunk row: ${beforeError.message}`);
+  }
+
+  const before = ((beforeRows ?? [])[0] ?? null) as TimedChunkRow | null;
+
+  const { data: afterRows, error: afterError } = await client
+    .from("video_chunks")
+    .select("id, video_id, start_time, end_time, timed_tokens")
+    .eq("video_id", videoId)
+    .gte("start_time", time)
+    .order("start_time", { ascending: true })
+    .limit(1);
+
+  if (afterError) {
+    throw new Error(`Failed to load timed chunk row: ${afterError.message}`);
+  }
+
+  const after = ((afterRows ?? [])[0] ?? null) as TimedChunkRow | null;
+
+  const candidates = [before, after].filter((row): row is TimedChunkRow => row !== null);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const nearest = candidates.sort(
+    (left, right) =>
+      distanceToChunk(time, left.start_time, left.end_time) - distanceToChunk(time, right.start_time, right.end_time),
+  )[0];
+
+  return mapTimedChunkRow(nearest);
+}
+
+type TimedChunkRow = {
+  id: string;
+  video_id: string;
+  start_time: number;
+  end_time: number;
+  timed_tokens: unknown;
+};
+
+function mapTimedChunkRow(row: TimedChunkRow): TimedChunkWindow {
+  return {
+    chunkId: row.id,
+    videoId: row.video_id,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    timedTokens: parseTimedTokens(row.timed_tokens),
+  };
+}
+
+function distanceToChunk(time: number, start: number, end: number): number {
+  if (time < start) {
+    return start - time;
+  }
+
+  if (time > end) {
+    return time - end;
+  }
+
+  return 0;
 }
 
 function parseTimedTokens(value: unknown): TimedToken[] {

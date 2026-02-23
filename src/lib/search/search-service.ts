@@ -1,7 +1,9 @@
 import { getSupabaseAdminClient } from "@/lib/db/supabase-admin";
 import {
+  getVideoChunkTimedTokensAtTime,
   getChunkTimedTokens,
   searchVideoChunks,
+  type TimedChunkWindow,
   type SearchChunkRow,
 } from "@/lib/db/repositories/video-chunks";
 import { MOCK_VIDEO_CHUNKS } from "@/lib/mock/video-chunks";
@@ -41,6 +43,36 @@ export async function getTimedTokensForChunk(chunkId: string): Promise<TimedToke
   } catch {
     const fallback = MOCK_VIDEO_CHUNKS.find((chunk) => chunk.id === chunkId);
     return fallback?.timedTokens ?? null;
+  }
+}
+
+export async function getTimedTokensForVideoAtTime(
+  videoId: string,
+  time: number,
+): Promise<TimedChunkWindow | null> {
+  if (!videoId || !Number.isFinite(time) || time < 0) {
+    return null;
+  }
+
+  try {
+    const client = getSupabaseAdminClient();
+    return await getVideoChunkTimedTokensAtTime(client, videoId, time);
+  } catch {
+    const sameVideo = MOCK_VIDEO_CHUNKS.filter((chunk) => chunk.videoId === videoId);
+    if (sameVideo.length === 0) {
+      return null;
+    }
+
+    const within = sameVideo.find((chunk) => chunk.startTime <= time && chunk.endTime >= time);
+    const nearest = within ?? sameVideo.sort((a, b) => distanceToChunk(time, a.startTime, a.endTime) - distanceToChunk(time, b.startTime, b.endTime))[0];
+
+    return {
+      chunkId: nearest.id,
+      videoId: nearest.videoId,
+      startTime: nearest.startTime,
+      endTime: nearest.endTime,
+      timedTokens: nearest.timedTokens,
+    };
   }
 }
 
@@ -93,4 +125,16 @@ function clampLimit(value: number): number {
   }
 
   return Math.min(Math.max(Math.floor(value), 1), 50);
+}
+
+function distanceToChunk(time: number, start: number, end: number): number {
+  if (time < start) {
+    return start - time;
+  }
+
+  if (time > end) {
+    return time - end;
+  }
+
+  return 0;
 }
