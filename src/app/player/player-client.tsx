@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeForSearch, tokenizeQuery } from "@/lib/search/ranking";
 import type { SearchResult } from "@/types/search";
 
@@ -30,11 +30,94 @@ type RemoteTimedTokenState = {
   tokens: TimedToken[];
 };
 
-const TIME_POLL_INTERVAL_MS = 250;
+type SubtitleLine = {
+  id: string;
+  start: number;
+  end: number;
+  tokens: TimedToken[];
+};
+
+const TIME_POLL_INTERVAL_MS = 180;
+const SEEK_PRIME_INTERVAL_MS = 360;
+const SEEK_PRIME_MAX_ATTEMPTS = 14;
+const SUBTITLE_LINE_MAX_TOKENS = 8;
+const SUBTITLE_LINE_MAX_CHARS = 30;
+const SUBTITLE_VISIBLE_LINES = 3;
+
+type YouTubePlayer = {
+  destroy: () => void;
+  playVideo: () => void;
+  seekTo: (seconds: number, allowSeekAhead?: boolean) => void;
+  mute: () => void;
+  unMute: () => void;
+  setVolume: (volume: number) => void;
+  getCurrentTime: () => number;
+};
+
+type YouTubePlayerConstructor = new (
+  element: Element,
+  options: {
+    videoId: string;
+    playerVars?: Record<string, string | number>;
+    events?: {
+      onReady?: () => void;
+      onError?: () => void;
+    };
+  },
+) => YouTubePlayer;
+
+declare global {
+  interface Window {
+    YT?: {
+      Player?: YouTubePlayerConstructor;
+    };
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
+let ytIframeApiPromise: Promise<void> | null = null;
+
+function loadYouTubeIframeApi(): Promise<void> {
+  if (typeof window === "undefined") {
+    return Promise.resolve();
+  }
+
+  if (window.YT?.Player) {
+    return Promise.resolve();
+  }
+
+  if (ytIframeApiPromise) {
+    return ytIframeApiPromise;
+  }
+
+  ytIframeApiPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+    const previousHandler = window.onYouTubeIframeAPIReady;
+
+    window.onYouTubeIframeAPIReady = () => {
+      previousHandler?.();
+      resolve();
+    };
+
+    if (existing) {
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://www.youtube.com/iframe_api";
+    script.async = true;
+    script.onerror = () => reject(new Error("Failed to load YouTube Iframe API"));
+    document.head.append(script);
+  });
+
+  return ytIframeApiPromise;
+}
 
 export function PlayerClient({ query, requestedIndex, results }: PlayerClientProps) {
   const router = useRouter();
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const playerHostRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<YouTubePlayer | null>(null);
+  const playbackTimeRef = useRef<number | null>(null);
   const [unmutedResultId, setUnmutedResultId] = useState<string | null>(null);
   const [playbackTime, setPlaybackTime] = useState<number | null>(null);
   const [remoteTimedTokenState, setRemoteTimedTokenState] = useState<RemoteTimedTokenState | null>(null);
@@ -42,7 +125,12 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   const currentIndex = clampIndex(requestedIndex, results.length);
   const currentResult = results[currentIndex] ?? null;
   const currentResultId = currentResult?.id ?? null;
+  const currentStartTime = currentResult?.startTime ?? 0;
   const queryTerms = useMemo(() => tokenizeQuery(query), [query]);
+  const normalizedQueryTerms = useMemo(
+    () => queryTerms.map((term) => normalizeForSearch(term)).filter(Boolean),
+    [queryTerms],
+  );
   const fallbackTimedTokens = useMemo(() => {
     if (!currentResult) {
       return [];
@@ -57,47 +145,41 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
 
     return fallbackTimedTokens;
   }, [currentResultId, fallbackTimedTokens, remoteTimedTokenState]);
+  const subtitleLines = useMemo(() => buildSubtitleLines(timedTokens), [timedTokens]);
+  const activeLineIndex = useMemo(
+    () => findActiveSubtitleLineIndex(subtitleLines, playbackTime ?? currentStartTime),
+    [currentStartTime, playbackTime, subtitleLines],
+  );
+  const visibleSubtitleLines = useMemo(
+    () => pickVisibleSubtitleLines(subtitleLines, activeLineIndex, SUBTITLE_VISIBLE_LINES),
+    [activeLineIndex, subtitleLines],
+  );
   const hasUnmuted = currentResult ? unmutedResultId === currentResult.id : false;
   const currentPlaybackTime = useMemo(() => {
-    if (!currentResult) {
-      return 0;
-    }
-
     if (
+      currentResult &&
       typeof playbackTime === "number" &&
-      playbackTime >= currentResult.startTime - 0.2 &&
-      playbackTime <= currentResult.endTime + 2
+      Number.isFinite(playbackTime) &&
+      playbackTime >= currentResult.startTime - 0.8 &&
+      playbackTime <= currentResult.endTime + 4
     ) {
       return playbackTime;
     }
 
-    return currentResult.startTime;
-  }, [currentResult, playbackTime]);
+    return currentStartTime;
+  }, [currentResult, currentStartTime, playbackTime]);
 
-  useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (!event.origin.includes("youtube")) {
-        return;
-      }
+  const seekToTime = useCallback((seconds: number, shouldPlay = true) => {
+    const player = playerRef.current;
+    if (!player) {
+      return;
+    }
 
-      const message = parseYouTubeMessage(event.data);
-
-      if (!message || message.event !== "infoDelivery") {
-        return;
-      }
-
-      const nextTime = message.info?.currentTime;
-
-      if (typeof nextTime === "number" && Number.isFinite(nextTime)) {
-        setPlaybackTime(nextTime);
-      }
-    };
-
-    window.addEventListener("message", onMessage);
-
-    return () => {
-      window.removeEventListener("message", onMessage);
-    };
+    const target = Math.max(0, seconds);
+    player.seekTo(target, true);
+    if (shouldPlay) {
+      player.playVideo();
+    }
   }, []);
 
   useEffect(() => {
@@ -128,68 +210,131 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
         }
       });
 
-    const pullCurrentTime = () => {
-      const iframeWindow = iframeRef.current?.contentWindow;
-
-      if (!iframeWindow) {
-        return;
-      }
-
-      iframeWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: "getCurrentTime",
-          args: [],
-        }),
-        "*",
-      );
-    };
-
-    pullCurrentTime();
-    const timer = window.setInterval(pullCurrentTime, TIME_POLL_INTERVAL_MS);
-
     return () => {
       active = false;
-      window.clearInterval(timer);
     };
   }, [currentResultId]);
 
-  const embedUrl = useMemo(() => {
-    if (!currentResult) {
-      return "";
+  useEffect(() => {
+    if (!currentResult || !playerHostRef.current) {
+      return;
     }
 
-    const params = new URLSearchParams({
-      autoplay: "1",
-      mute: "1",
-      start: currentResult.startTime.toString(),
-      enablejsapi: "1",
-      playsinline: "1",
-      rel: "0",
-    });
+    let active = true;
+    let syncTimer: number | null = null;
+    let primeTimer: number | null = null;
+    const targetStart = Math.max(0, currentResult.startTime);
+    let primeAttempts = 0;
 
-    return `https://www.youtube.com/embed/${currentResult.videoId}?${params.toString()}`;
-  }, [currentResult]);
+    playbackTimeRef.current = null;
+
+    loadYouTubeIframeApi()
+      .then(() => {
+        if (!active || !playerHostRef.current || !window.YT?.Player) {
+          return;
+        }
+
+        playerRef.current?.destroy();
+        playerRef.current = null;
+
+        const player = new window.YT.Player(playerHostRef.current, {
+          videoId: currentResult.videoId,
+          playerVars: {
+            autoplay: 1,
+            mute: 1,
+            start: Math.floor(targetStart),
+            playsinline: 1,
+            rel: 0,
+            controls: 1,
+          },
+          events: {
+            onReady: () => {
+              if (!active) {
+                return;
+              }
+
+              try {
+                player.mute();
+              } catch {
+                return;
+              }
+
+              primeSeek();
+            },
+          },
+        });
+
+        playerRef.current = player;
+
+        function pullCurrentTime() {
+          try {
+            const next = player.getCurrentTime();
+            if (typeof next === "number" && Number.isFinite(next)) {
+              playbackTimeRef.current = next;
+              setPlaybackTime(next);
+            }
+          } catch {
+            // noop
+          }
+        }
+
+        function primeSeek() {
+          if (!active) {
+            return;
+          }
+
+          primeAttempts += 1;
+          try {
+            player.seekTo(targetStart, true);
+            player.playVideo();
+            pullCurrentTime();
+          } catch {
+            // noop
+          }
+        }
+
+        syncTimer = window.setInterval(pullCurrentTime, TIME_POLL_INTERVAL_MS);
+        primeTimer = window.setInterval(() => {
+          const latest = playbackTimeRef.current;
+          const synced = typeof latest === "number" && latest >= targetStart - 0.35;
+
+          if (synced || primeAttempts >= SEEK_PRIME_MAX_ATTEMPTS) {
+            if (primeTimer !== null) {
+              window.clearInterval(primeTimer);
+              primeTimer = null;
+            }
+            return;
+          }
+
+          primeSeek();
+        }, SEEK_PRIME_INTERVAL_MS);
+
+        primeSeek();
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+      if (syncTimer !== null) {
+        window.clearInterval(syncTimer);
+      }
+      if (primeTimer !== null) {
+        window.clearInterval(primeTimer);
+      }
+      playerRef.current?.destroy();
+      playerRef.current = null;
+    };
+  }, [currentResult, currentResult?.videoId, currentResultId, currentStartTime]);
 
   const onUnmute = () => {
-    const iframeWindow = iframeRef.current?.contentWindow;
-
-    if (iframeWindow) {
-      const sendCommand = (func: string, args: unknown[] = []) => {
-        iframeWindow.postMessage(
-          JSON.stringify({
-            event: "command",
-            func,
-            args,
-          }),
-          "*",
-        );
-      };
-
-      sendCommand("unMute");
-      sendCommand("setVolume", [100]);
-      sendCommand("playVideo");
+    const player = playerRef.current;
+    if (!player) {
+      return;
     }
+
+    player.unMute();
+    player.setVolume(100);
+    player.playVideo();
 
     setUnmutedResultId(currentResult?.id ?? null);
   };
@@ -199,26 +344,11 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
       return;
     }
 
-    const iframeWindow = iframeRef.current?.contentWindow;
+    seekToTime(currentResult.startTime, true);
+  };
 
-    if (iframeWindow) {
-      iframeWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: "seekTo",
-          args: [currentResult.startTime, true],
-        }),
-        "*",
-      );
-      iframeWindow.postMessage(
-        JSON.stringify({
-          event: "command",
-          func: "playVideo",
-          args: [],
-        }),
-        "*",
-      );
-    }
+  const onSeekSubtitleLine = (lineStartTime: number) => {
+    seekToTime(lineStartTime, true);
   };
 
   const goToIndex = (index: number) => {
@@ -266,14 +396,7 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
         </h1>
 
         <div className="player-frame-wrap">
-          <iframe
-            ref={iframeRef}
-            title="YouTube clip player"
-            src={embedUrl}
-            className="player-frame"
-            allow="autoplay; encrypted-media; picture-in-picture"
-            allowFullScreen
-          />
+          <div ref={playerHostRef} className="player-frame" aria-label="YouTube clip player" />
           {!hasUnmuted && (
             <button type="button" className="unmute-button" onClick={onUnmute}>
               소리 켜기
@@ -307,7 +430,27 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
         </div>
 
         <section className="subtitle-board" aria-label="현재 자막">
-          <p className="subtitle-line">{renderTimedSubtitle(timedTokens, currentPlaybackTime, queryTerms)}</p>
+          <div className="subtitle-list">
+            {visibleSubtitleLines.length === 0 && <p className="subtitle-empty">자막을 불러오는 중입니다...</p>}
+            {visibleSubtitleLines.map((line) => {
+              const isActiveLine = line.index === activeLineIndex;
+
+              return (
+                <button
+                  key={line.id}
+                  type="button"
+                  className={`subtitle-line-button${isActiveLine ? " is-active" : ""}`}
+                  onClick={() => onSeekSubtitleLine(line.start)}
+                  title={`${formatTime(line.start)}부터 재생`}
+                >
+                  <span className="subtitle-line-time">{formatTime(line.start)}</span>
+                  <span className="subtitle-line">
+                    {renderSubtitleLineTokens(line.tokens, currentPlaybackTime, normalizedQueryTerms)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
           <p className="subtitle-progress">
             {formatTime(currentPlaybackTime)} / {formatTime(currentResult.endTime)}
           </p>
@@ -331,44 +474,150 @@ export function PlayerClient({ query, requestedIndex, results }: PlayerClientPro
   );
 }
 
-function renderTimedSubtitle(tokens: TimedToken[], currentTime: number, queryTerms: string[]) {
+function renderSubtitleLineTokens(tokens: TimedToken[], currentTime: number, normalizedQueryTerms: string[]) {
   if (tokens.length === 0) {
     return null;
   }
 
-  const normalizedTerms = queryTerms.map(normalizeForSearch).filter(Boolean);
   const lastHighlightableIndex = findLastHighlightableIndex(tokens);
 
   return tokens.map((token, index) => {
-    if (!token.highlightable) {
-      return <span key={`token-${index}-${token.text}`}>{token.text}</span>;
-    }
-
+    const text = normalizeTokenTextForDisplay(token.text, index);
     const normalizedToken = normalizeForSearch(token.text);
     const isQueryToken =
       normalizedToken.length > 0 &&
-      normalizedTerms.some((term) => normalizedToken.includes(term) || term.includes(normalizedToken));
+      normalizedQueryTerms.some((term) => normalizedToken.includes(term) || term.includes(normalizedToken));
     const isLastToken = index === lastHighlightableIndex;
     const isActive =
       currentTime >= token.start &&
       (isLastToken ? currentTime <= token.end + 0.05 : currentTime < token.end);
 
     let className = "subtitle-token";
-
     if (isQueryToken) {
       className = `${className} subtitle-mark-query`;
     }
-
     if (isActive) {
       className = `${className} subtitle-mark-active`;
     }
 
     return (
-      <span key={`token-${index}-${token.start}`} className={className}>
-        {token.text}
+      <span key={`line-token-${token.start}-${index}`} className={className}>
+        {text}
       </span>
     );
   });
+}
+
+function buildSubtitleLines(tokens: TimedToken[]): SubtitleLine[] {
+  const spokenTokens = tokens.filter((token) => token.highlightable && normalizeForSearch(token.text).length > 0);
+
+  if (spokenTokens.length === 0) {
+    return [];
+  }
+
+  const lines: SubtitleLine[] = [];
+  let buffer: TimedToken[] = [];
+  let charCount = 0;
+
+  const flush = () => {
+    if (buffer.length === 0) {
+      return;
+    }
+
+    const first = buffer[0];
+    const last = buffer[buffer.length - 1];
+    lines.push({
+      id: `${first.start}-${last.end}-${lines.length}`,
+      start: first.start,
+      end: last.end,
+      tokens: buffer,
+    });
+
+    buffer = [];
+    charCount = 0;
+  };
+
+  for (const token of spokenTokens) {
+    const tokenLength = token.text.trim().length;
+    const reachesSizeLimit =
+      buffer.length >= SUBTITLE_LINE_MAX_TOKENS || charCount + tokenLength > SUBTITLE_LINE_MAX_CHARS;
+    const endsSentence = /[.!?。？！]$/.test(token.text.trim());
+
+    if (reachesSizeLimit) {
+      flush();
+    }
+
+    buffer.push(token);
+    charCount += tokenLength;
+
+    if (endsSentence) {
+      flush();
+    }
+  }
+
+  flush();
+  return lines;
+}
+
+function findActiveSubtitleLineIndex(lines: SubtitleLine[], currentTime: number): number {
+  if (lines.length === 0) {
+    return -1;
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const isLastLine = index === lines.length - 1;
+    if (currentTime >= line.start && (isLastLine ? currentTime <= line.end + 0.05 : currentTime < line.end)) {
+      return index;
+    }
+  }
+
+  if (currentTime < lines[0].start) {
+    return 0;
+  }
+
+  return lines.length - 1;
+}
+
+function pickVisibleSubtitleLines(lines: SubtitleLine[], activeIndex: number, visibleCount: number): Array<
+  SubtitleLine & { index: number }
+> {
+  if (lines.length === 0) {
+    return [];
+  }
+
+  const safeVisibleCount = Math.max(1, visibleCount);
+  const resolvedActive = activeIndex < 0 ? 0 : Math.min(activeIndex, lines.length - 1);
+  let start = Math.max(0, resolvedActive - 1);
+  const end = Math.min(lines.length, start + safeVisibleCount);
+
+  if (end - start < safeVisibleCount) {
+    start = Math.max(0, end - safeVisibleCount);
+  }
+
+  const picked: Array<SubtitleLine & { index: number }> = [];
+  for (let index = start; index < end; index += 1) {
+    picked.push({
+      ...lines[index],
+      index,
+    });
+  }
+
+  return picked;
+}
+
+function normalizeTokenTextForDisplay(value: string, index: number): string {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  if (index === 0) {
+    return trimmed;
+  }
+
+  return value.startsWith(" ") ? value : ` ${trimmed}`;
 }
 
 function buildTimedTokens(text: string, startTime: number, endTime: number): TimedToken[] {
@@ -480,25 +729,6 @@ function findLastHighlightableIndex(tokens: TimedToken[]): number {
   }
 
   return -1;
-}
-
-function parseYouTubeMessage(rawData: unknown): {
-  event?: string;
-  info?: { currentTime?: number };
-} | null {
-  if (typeof rawData === "string") {
-    try {
-      return JSON.parse(rawData) as { event?: string; info?: { currentTime?: number } };
-    } catch {
-      return null;
-    }
-  }
-
-  if (typeof rawData === "object" && rawData !== null) {
-    return rawData as { event?: string; info?: { currentTime?: number } };
-  }
-
-  return null;
 }
 
 function clampIndex(value: number, length: number): number {

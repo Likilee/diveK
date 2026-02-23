@@ -306,6 +306,12 @@ body {
   border: 0;
 }
 
+.player-frame iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 .unmute-button {
   position: absolute;
   right: 0.9rem;
@@ -364,16 +370,65 @@ body {
   border-radius: 12px;
   background: rgba(58, 58, 64, 0.95);
   padding: clamp(1.05rem, 2.8vw, 1.8rem);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.subtitle-list {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.subtitle-line-button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 11px;
+  background: rgba(28, 31, 43, 0.78);
+  padding: 0.62rem 0.72rem;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+
+.subtitle-line-button:hover,
+.subtitle-line-button:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(250, 204, 21, 0.44);
+}
+
+.subtitle-line-button.is-active {
+  border-color: rgba(250, 204, 21, 0.56);
+  background: rgba(50, 56, 77, 0.9);
+}
+
+.subtitle-line-time {
+  display: block;
+  margin-bottom: 0.34rem;
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+  color: rgba(203, 213, 225, 0.95);
 }
 
 .subtitle-line {
+  display: block;
   margin: 0;
-  text-align: center;
+  text-align: left;
   color: #f8fafc;
   font-family: var(--font-heading), "Atkinson Hyperlegible", sans-serif;
-  font-size: clamp(2rem, 6.4vw, 4.6rem);
-  line-height: 1.18;
-  letter-spacing: -0.03em;
+  font-size: clamp(1.4rem, 4.6vw, 2.2rem);
+  line-height: 1.24;
+  letter-spacing: -0.02em;
+}
+
+.subtitle-line-button.is-active .subtitle-line {
+  font-size: clamp(1.62rem, 5.8vw, 2.8rem);
+}
+
+.subtitle-empty {
+  margin: 0;
+  font-size: 0.95rem;
+  color: rgba(226, 232, 240, 0.9);
+  text-align: center;
 }
 
 .subtitle-token {
@@ -395,8 +450,8 @@ body {
 }
 
 .subtitle-progress {
-  margin: 0.6rem 0 0;
-  text-align: center;
+  margin: 0.22rem 0 0;
+  text-align: right;
   color: rgba(214, 224, 255, 0.9);
   font-size: 0.9rem;
 }
