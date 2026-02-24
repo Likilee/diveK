@@ -1,0 +1,4 @@
+interface:
+  display_name: "DiveK BI Governance"
+  short_description: "Govern DiveK BI quality with launch-ready compliance reviews."
+  default_prompt: "Review this artifact for DiveK BI compliance and return prioritized findings with fix criteria."

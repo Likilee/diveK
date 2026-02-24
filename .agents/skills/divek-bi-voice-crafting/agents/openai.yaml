@@ -1,0 +1,4 @@
+interface:
+  display_name: "DiveK BI Voice Crafting"
+  short_description: "Craft and review UX copy in DiveK local-buddy brand tone."
+  default_prompt: "Rewrite this copy in DiveK voice and deliver production-ready variants by UX surface."

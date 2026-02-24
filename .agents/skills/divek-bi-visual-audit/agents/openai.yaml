@@ -1,0 +1,4 @@
+interface:
+  display_name: "DiveK BI Visual Audit"
+  short_description: "Audit UI visuals against DiveK cinematic minimal standards."
+  default_prompt: "Audit this UI against DiveK visual rules and provide exact token-level remediations."
