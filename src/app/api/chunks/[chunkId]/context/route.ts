@@ -19,17 +19,8 @@ export async function GET(_: Request, context: RouteContext) {
   const chunkContext = await getChunkContext(chunkId);
 
   if (!chunkContext) {
-    return NextResponse.json({ error: "Chunk not found" }, { status: 404 });
+    return NextResponse.json({ error: "Chunk context not found" }, { status: 404 });
   }
 
-  return NextResponse.json({
-    chunkId,
-    timedTokens: chunkContext.tokens.map((token) => ({
-      idx: token.idx,
-      token: token.token,
-      token_norm: token.tokenNorm,
-      start_sec: token.startSec,
-      end_sec: token.endSec,
-    })),
-  });
+  return NextResponse.json(chunkContext);
 }

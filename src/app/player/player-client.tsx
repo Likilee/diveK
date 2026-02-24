@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { normalizeForSearch, tokenizeQuery } from "@/lib/search/ranking";
-import type { SearchResult } from "@/types/search";
+import { normalizeForSearch } from "@/lib/search/ranking";
+import type { ChunkContext, SearchResult, TimedToken as SearchTimedToken } from "@/types/search";
 
 type PlayerClientProps = {
   query: string;
@@ -11,50 +11,29 @@ type PlayerClientProps = {
   results: SearchResult[];
 };
 
-type TimedToken = {
+type SubtitleToken = {
   text: string;
+  tokenNorm: string;
   start: number;
   end: number;
   highlightable: boolean;
-};
-
-type TimedTokenApiRow = {
-  token: string;
-  start_time: number;
-  end_time: number;
-};
-
-type TimedTokensByTimeResponse = {
-  chunkId: string;
-  videoId: string;
-  start_time: number;
-  end_time: number;
-  timedTokens?: TimedTokenApiRow[];
-};
-
-type RemoteTimedTokenState = {
-  videoId: string;
-  chunkId: string;
-  startTime: number;
-  endTime: number;
-  tokens: TimedToken[];
 };
 
 type SubtitleLine = {
   id: string;
   start: number;
   end: number;
-  tokens: TimedToken[];
+  tokens: SubtitleToken[];
 };
 
-const TIME_POLL_INTERVAL_MS = 180;
-const SEEK_PRIME_INTERVAL_MS = 360;
-const SEEK_PRIME_MAX_ATTEMPTS = 14;
+const TIME_POLL_INTERVAL_MS = 220;
+const SEEK_COMMAND_DEDUP_WINDOW_MS = 400;
+const SEEK_TARGET_DEDUP_EPSILON_SECONDS = 0.05;
+const SOFT_START_ADJUST_MAX_ELAPSED_SECONDS = 2;
+const SOFT_START_ADJUST_MIN_DRIFT_SECONDS = 0.85;
 const SUBTITLE_LINE_MAX_TOKENS = 8;
 const SUBTITLE_LINE_MAX_CHARS = 30;
-const SUBTITLE_VISIBLE_LINES = 3;
-const SUBTITLE_REMOTE_FETCH_THROTTLE_MS = 900;
-const MATCH_START_PRE_ROLL_SECONDS = 0.9;
+const SUBTITLE_VISIBLE_LINES = 2;
 
 type YouTubePlayer = {
   destroy: () => void;
@@ -126,58 +105,51 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const playerRef = useRef<YouTubePlayer | null>(null);
   const playbackTimeRef = useRef<number | null>(null);
-  const subtitleFetchAtRef = useRef(0);
+  const lastSeekRef = useRef<{ target: number; at: number } | null>(null);
+  const softAdjustedResultIdRef = useRef<string | null>(null);
+  const contextCacheRef = useRef<Map<string, ChunkContext>>(new Map());
+  const contextRequestRef = useRef<Map<string, Promise<ChunkContext | null>>>(new Map());
+
   const [currentIndex, setCurrentIndex] = useState(() => clampIndex(initialIndex, results.length));
   const [playbackTime, setPlaybackTime] = useState<number | null>(null);
-  const [remoteTimedTokenState, setRemoteTimedTokenState] = useState<RemoteTimedTokenState | null>(null);
+  const [chunkContext, setChunkContext] = useState<ChunkContext | null>(null);
 
   const currentResult = results[currentIndex] ?? null;
-  const currentResultId = currentResult?.id ?? null;
+  const currentResultId = currentResult?.chunkId ?? null;
   const currentVideoId = currentResult?.videoId ?? null;
-  const queryTerms = useMemo(() => tokenizeQuery(query), [query]);
-  const normalizedQueryTerms = useMemo(
-    () => queryTerms.map((term) => normalizeForSearch(term)).filter(Boolean),
-    [queryTerms],
+  const preferredStartTime = currentResult
+    ? clamp(currentResult.recommendedStartSec, currentResult.chunkStartSec, currentResult.chunkEndSec)
+    : 0;
+  const normalizedMatchedTerms = useMemo(
+    () =>
+      new Set(
+        (currentResult?.matchedTerms ?? [])
+          .map((term) => normalizeForSearch(term))
+          .filter(Boolean),
+      ),
+    [currentResult],
   );
-  const fallbackTimedTokens = useMemo(() => {
+
+  const fallbackSubtitleTokens = useMemo(() => {
     if (!currentResult) {
       return [];
     }
 
-    return buildTimedTokens(currentResult.fullText, currentResult.startTime, currentResult.endTime);
+    return buildFallbackSubtitleTokens(
+      currentResult.fullText,
+      currentResult.chunkStartSec,
+      currentResult.chunkEndSec,
+    );
   }, [currentResult]);
-  const currentChunkTimedTokens = useMemo(() => {
-    if (
-      remoteTimedTokenState?.videoId === currentVideoId &&
-      remoteTimedTokenState.chunkId === currentResultId &&
-      remoteTimedTokenState.tokens.length > 0
-    ) {
-      return remoteTimedTokenState.tokens;
-    }
 
-    return fallbackTimedTokens;
-  }, [currentResultId, currentVideoId, fallbackTimedTokens, remoteTimedTokenState]);
-  const timedTokens = useMemo(() => {
-    if (remoteTimedTokenState?.videoId === currentVideoId && remoteTimedTokenState.tokens.length > 0) {
-      return remoteTimedTokenState.tokens;
-    }
+  const contextSubtitleTokens = useMemo(
+    () => mapContextTokensToSubtitleTokens(chunkContext?.tokens ?? []),
+    [chunkContext],
+  );
 
-    return currentChunkTimedTokens;
-  }, [currentChunkTimedTokens, currentVideoId, remoteTimedTokenState]);
-  const preferredStartTime = useMemo(() => {
-    if (!currentResult) {
-      return 0;
-    }
+  const subtitleTokens = contextSubtitleTokens.length > 0 ? contextSubtitleTokens : fallbackSubtitleTokens;
 
-    const matchedStart = findMatchedTokenStart(currentChunkTimedTokens, normalizedQueryTerms);
-    if (matchedStart === null) {
-      return currentResult.startTime;
-    }
-
-    const padded = Math.max(currentResult.startTime, matchedStart - MATCH_START_PRE_ROLL_SECONDS);
-    return Math.min(padded, currentResult.endTime);
-  }, [currentChunkTimedTokens, currentResult, normalizedQueryTerms]);
-  const subtitleLines = useMemo(() => buildSubtitleLines(timedTokens), [timedTokens]);
+  const subtitleLines = useMemo(() => buildSubtitleLines(subtitleTokens), [subtitleTokens]);
   const activeLineIndex = useMemo(
     () => findActiveSubtitleLineIndex(subtitleLines, playbackTime ?? preferredStartTime),
     [playbackTime, preferredStartTime, subtitleLines],
@@ -186,6 +158,7 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
     () => pickVisibleSubtitleLines(subtitleLines, activeLineIndex, SUBTITLE_VISIBLE_LINES),
     [activeLineIndex, subtitleLines],
   );
+
   const currentPlaybackTime = useMemo(() => {
     if (typeof playbackTime === "number" && Number.isFinite(playbackTime)) {
       return playbackTime;
@@ -232,23 +205,40 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
     );
   }, []);
 
-  const seekToTime = useCallback((seconds: number, shouldPlay = true) => {
-    const player = playerRef.current;
-    const target = Math.max(0, seconds);
-    const seekResult = callPlayerMethod(player, "seekTo", [target, true]);
+  const seekToTime = useCallback(
+    (seconds: number, shouldPlay = true): boolean => {
+      const now = Date.now();
+      const player = playerRef.current;
+      const target = Math.max(0, seconds);
+      const lastSeek = lastSeekRef.current;
 
-    if (seekResult.called) {
-      if (shouldPlay) {
-        callPlayerMethod(player, "playVideo");
+      if (
+        lastSeek &&
+        now - lastSeek.at < SEEK_COMMAND_DEDUP_WINDOW_MS &&
+        Math.abs(lastSeek.target - target) <= SEEK_TARGET_DEDUP_EPSILON_SECONDS
+      ) {
+        return false;
       }
-      return;
-    }
 
-    postIframeCommand("seekTo", [target, true]);
-    if (shouldPlay) {
-      postIframeCommand("playVideo");
-    }
-  }, [postIframeCommand]);
+      lastSeekRef.current = { target, at: now };
+      const seekResult = callPlayerMethod(player, "seekTo", [target, true]);
+
+      if (seekResult.called) {
+        if (shouldPlay) {
+          callPlayerMethod(player, "playVideo");
+        }
+        return true;
+      }
+
+      postIframeCommand("seekTo", [target, true]);
+      if (shouldPlay) {
+        postIframeCommand("playVideo");
+      }
+
+      return true;
+    },
+    [postIframeCommand],
+  );
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -276,49 +266,54 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
   }, []);
 
   useEffect(() => {
-    if (!currentResultId || !currentVideoId || !currentResult) {
+    if (!currentResultId) {
+      return;
+    }
+
+    const cached = contextCacheRef.current.get(currentResultId);
+    if (cached) {
+      setChunkContext(cached);
       return;
     }
 
     let active = true;
+    let request = contextRequestRef.current.get(currentResultId);
+    if (!request) {
+      request = fetch(`/api/chunks/${currentResultId}/context`, { cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) {
+            return null;
+          }
 
-    fetch(`/api/chunks/${currentResultId}/timed-tokens`, { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) {
-          return null;
-        }
+          const payload = (await response.json()) as ChunkContext;
+          return parseChunkContext(payload);
+        })
+        .catch(() => null)
+        .finally(() => {
+          contextRequestRef.current.delete(currentResultId);
+        });
 
-        const payload = (await response.json()) as { timedTokens?: TimedTokenApiRow[] };
-        const parsed = parseApiTimedTokens(payload.timedTokens);
+      contextRequestRef.current.set(currentResultId, request);
+    }
 
-        if (active) {
-          setRemoteTimedTokenState({
-            videoId: currentVideoId,
-            chunkId: currentResultId,
-            startTime: currentResult.startTime,
-            endTime: currentResult.endTime,
-            tokens: parsed,
-          });
-        }
+    request.then((parsed) => {
+      if (!active) {
+        return;
+      }
 
-        return null;
-      })
-      .catch(() => {
-        if (active) {
-          setRemoteTimedTokenState({
-            videoId: currentVideoId,
-            chunkId: currentResultId,
-            startTime: currentResult.startTime,
-            endTime: currentResult.endTime,
-            tokens: [],
-          });
-        }
-      });
+      if (!parsed) {
+        setChunkContext(null);
+        return;
+      }
+
+      contextCacheRef.current.set(currentResultId, parsed);
+      setChunkContext(parsed);
+    });
 
     return () => {
       active = false;
     };
-  }, [currentResult, currentResultId, currentVideoId]);
+  }, [currentResultId]);
 
   useEffect(() => {
     if (!currentVideoId || !currentResultId || !iframeRef.current) {
@@ -326,13 +321,11 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
     }
 
     let active = true;
-    let syncTimer: number | null = null;
-    let primeTimer: number | null = null;
-    const targetStart = Math.max(0, preferredStartTime);
-    let primeAttempts = 0;
+    let pollTimer: number | null = null;
 
     playbackTimeRef.current = null;
     playerRef.current = null;
+    lastSeekRef.current = null;
 
     const pullCurrentTime = () => {
       const apiPlayer = playerRef.current;
@@ -349,16 +342,6 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
       }
     };
 
-    const primeSeek = () => {
-      if (!active) {
-        return;
-      }
-
-      primeAttempts += 1;
-      seekToTime(targetStart, true);
-      pullCurrentTime();
-    };
-
     loadYouTubeIframeApi()
       .then(() => {
         if (!active || !iframeRef.current || !window.YT?.Player) {
@@ -370,7 +353,7 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
           playerVars: {
             autoplay: 1,
             mute: 0,
-            start: Math.max(0, Math.floor(targetStart)),
+            start: Math.max(0, Math.floor(preferredStartTime)),
             playsinline: 1,
             rel: 0,
             controls: 1,
@@ -381,7 +364,8 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
                 return;
               }
 
-              primeSeek();
+              callPlayerMethod(player, "playVideo");
+              seekToTime(preferredStartTime, true);
             },
           },
         });
@@ -390,79 +374,48 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
       })
       .catch(() => undefined);
 
-    syncTimer = window.setInterval(pullCurrentTime, TIME_POLL_INTERVAL_MS);
-    primeTimer = window.setInterval(() => {
-      const latest = playbackTimeRef.current;
-      const synced = typeof latest === "number" && latest >= targetStart - 0.35;
-
-      if (synced || primeAttempts >= SEEK_PRIME_MAX_ATTEMPTS) {
-        if (primeTimer !== null) {
-          window.clearInterval(primeTimer);
-          primeTimer = null;
-        }
-        return;
-      }
-
-      primeSeek();
-    }, SEEK_PRIME_INTERVAL_MS);
-
-    primeSeek();
+    pollTimer = window.setInterval(pullCurrentTime, TIME_POLL_INTERVAL_MS);
 
     return () => {
       active = false;
-      if (syncTimer !== null) {
-        window.clearInterval(syncTimer);
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
       }
-      if (primeTimer !== null) {
-        window.clearInterval(primeTimer);
-      }
+      const apiPlayer = playerRef.current;
       playerRef.current = null;
+      callPlayerMethod(apiPlayer, "destroy");
     };
-  }, [currentResultId, currentVideoId, postIframeCommand, preferredStartTime, seekToTime]);
+  }, [currentResultId, currentVideoId, preferredStartTime, postIframeCommand, seekToTime]);
 
   useEffect(() => {
-    if (!currentVideoId || typeof playbackTime !== "number" || !Number.isFinite(playbackTime)) {
+    if (!currentResultId) {
+      softAdjustedResultIdRef.current = null;
       return;
     }
 
-    const now = Date.now();
-    if (now - subtitleFetchAtRef.current < SUBTITLE_REMOTE_FETCH_THROTTLE_MS) {
+    if (
+      softAdjustedResultIdRef.current === currentResultId ||
+      typeof playbackTime !== "number" ||
+      !Number.isFinite(playbackTime)
+    ) {
       return;
     }
-    subtitleFetchAtRef.current = now;
 
-    const controller = new AbortController();
+    if (playbackTime > preferredStartTime + SOFT_START_ADJUST_MAX_ELAPSED_SECONDS) {
+      return;
+    }
 
-    fetch(`/api/videos/${currentVideoId}/timed-tokens?time=${playbackTime.toFixed(3)}`, {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          return;
-        }
+    if (Math.abs(playbackTime - preferredStartTime) < SOFT_START_ADJUST_MIN_DRIFT_SECONDS) {
+      return;
+    }
 
-        const payload = (await response.json()) as TimedTokensByTimeResponse;
-        const parsed = parseApiTimedTokens(payload.timedTokens);
+    const didSeek = seekToTime(preferredStartTime, false);
+    if (!didSeek) {
+      return;
+    }
 
-        if (!payload.chunkId || parsed.length === 0) {
-          return;
-        }
-
-        setRemoteTimedTokenState({
-          videoId: currentVideoId,
-          chunkId: payload.chunkId,
-          startTime: payload.start_time,
-          endTime: payload.end_time,
-          tokens: parsed,
-        });
-      })
-      .catch(() => undefined);
-
-    return () => {
-      controller.abort();
-    };
-  }, [currentVideoId, playbackTime]);
+    softAdjustedResultIdRef.current = currentResultId;
+  }, [currentResultId, playbackTime, preferredStartTime, seekToTime]);
 
   const onReplayCurrentClip = () => {
     if (!currentResult) {
@@ -470,10 +423,6 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
     }
 
     seekToTime(preferredStartTime, true);
-  };
-
-  const onSeekSubtitleLine = (lineStartTime: number) => {
-    seekToTime(lineStartTime, true);
   };
 
   const goToIndex = (index: number) => {
@@ -484,8 +433,9 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
 
     setCurrentIndex(nextIndex);
     setPlaybackTime(null);
-    subtitleFetchAtRef.current = 0;
-    setRemoteTimedTokenState(null);
+    lastSeekRef.current = null;
+    softAdjustedResultIdRef.current = null;
+    setChunkContext(null);
   };
 
   if (!query) {
@@ -556,7 +506,7 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
             다음
           </button>
           <p className="clip-time">
-            {formatTime(preferredStartTime)} - {formatTime(currentResult.endTime)}
+            {formatTime(preferredStartTime)} - {formatTime(currentResult.chunkEndSec)}
           </p>
         </div>
 
@@ -567,23 +517,18 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
               const isActiveLine = line.index === activeLineIndex;
 
               return (
-                <button
+                <p
                   key={line.id}
-                  type="button"
-                  className={`subtitle-line-button${isActiveLine ? " is-active" : ""}`}
-                  onClick={() => onSeekSubtitleLine(line.start)}
-                  title={`${formatTime(line.start)}부터 재생`}
+                  className={`subtitle-line-row${isActiveLine ? " is-active" : ""}`}
                 >
                   <span className="subtitle-line-time">{formatTime(line.start)}</span>
-                  <span className="subtitle-line">
-                    {renderSubtitleLineTokens(line.tokens, currentPlaybackTime, normalizedQueryTerms)}
-                  </span>
-                </button>
+                  <span className="subtitle-line">{renderSubtitleLineTokens(line.tokens, normalizedMatchedTerms)}</span>
+                </p>
               );
             })}
           </div>
           <p className="subtitle-progress">
-            {formatTime(currentPlaybackTime)} / {formatTime(currentResult.endTime)}
+            {formatTime(currentPlaybackTime)} / {formatTime(currentResult.chunkEndSec)}
           </p>
         </section>
 
@@ -593,7 +538,7 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
           </Link>
           <a
             className="player-back"
-            href={`https://www.youtube.com/watch?v=${currentResult.videoId}&t=${currentResult.startTime}s`}
+            href={`https://www.youtube.com/watch?v=${currentResult.videoId}&t=${Math.max(0, Math.floor(preferredStartTime))}s`}
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -605,47 +550,29 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
   );
 }
 
-function renderSubtitleLineTokens(tokens: TimedToken[], currentTime: number, normalizedQueryTerms: string[]) {
+function renderSubtitleLineTokens(tokens: SubtitleToken[], normalizedMatchedTerms: Set<string>) {
   if (tokens.length === 0) {
     return null;
   }
 
-  const lastHighlightableIndex = findLastHighlightableIndex(tokens);
-
   return tokens.map((token, index) => {
     const trimmedToken = token.text.trim();
-
     if (!trimmedToken) {
       return null;
     }
 
-    const normalizedToken = normalizeForSearch(trimmedToken);
-    const isQueryToken =
-      normalizedToken.length > 0 &&
-      normalizedQueryTerms.some((term) => normalizedToken.includes(term) || term.includes(normalizedToken));
-    const isLastToken = index === lastHighlightableIndex;
-    const isActive =
-      currentTime >= token.start &&
-      (isLastToken ? currentTime <= token.end + 0.05 : currentTime < token.end);
-
-    let className = "subtitle-token";
-    if (isQueryToken) {
-      className = `${className} subtitle-mark-query`;
-    }
-    if (isActive) {
-      className = `${className} subtitle-mark-active`;
-    }
+    const isMatchedKeyword = normalizedMatchedTerms.has(token.tokenNorm);
 
     return (
       <span key={`line-token-${token.start}-${index}`}>
         {index > 0 ? " " : ""}
-        <span className={className}>{trimmedToken}</span>
+        {isMatchedKeyword ? <mark className="subtitle-keyword">{trimmedToken}</mark> : trimmedToken}
       </span>
     );
   });
 }
 
-function buildSubtitleLines(tokens: TimedToken[]): SubtitleLine[] {
+function buildSubtitleLines(tokens: SubtitleToken[]): SubtitleLine[] {
   const spokenTokens = tokens.filter((token) => token.highlightable && normalizeForSearch(token.text).length > 0);
 
   if (spokenTokens.length === 0) {
@@ -653,7 +580,7 @@ function buildSubtitleLines(tokens: TimedToken[]): SubtitleLine[] {
   }
 
   const lines: SubtitleLine[] = [];
-  let buffer: TimedToken[] = [];
+  let buffer: SubtitleToken[] = [];
   let charCount = 0;
 
   const flush = () => {
@@ -725,7 +652,7 @@ function pickVisibleSubtitleLines(lines: SubtitleLine[], activeIndex: number, vi
 
   const safeVisibleCount = Math.max(1, visibleCount);
   const resolvedActive = activeIndex < 0 ? 0 : Math.min(activeIndex, lines.length - 1);
-  let start = Math.max(0, resolvedActive - 1);
+  let start = resolvedActive;
   const end = Math.min(lines.length, start + safeVisibleCount);
 
   if (end - start < safeVisibleCount) {
@@ -743,7 +670,17 @@ function pickVisibleSubtitleLines(lines: SubtitleLine[], activeIndex: number, vi
   return picked;
 }
 
-function buildTimedTokens(text: string, startTime: number, endTime: number): TimedToken[] {
+function mapContextTokensToSubtitleTokens(tokens: SearchTimedToken[]): SubtitleToken[] {
+  return tokens.map((token) => ({
+    text: token.token,
+    tokenNorm: token.tokenNorm,
+    start: token.startSec,
+    end: token.endSec,
+    highlightable: true,
+  }));
+}
+
+function buildFallbackSubtitleTokens(text: string, startTime: number, endTime: number): SubtitleToken[] {
   const chunks = text.match(/(\s+|[^\s]+)/g) ?? [text];
   const duration = Math.max(endTime - startTime, 0.8);
   const weights = new Map<number, number>();
@@ -755,7 +692,8 @@ function buildTimedTokens(text: string, startTime: number, endTime: number): Tim
       continue;
     }
 
-    const weight = Math.max(normalizeForSearch(chunks[index]).length, 1);
+    const normalized = normalizeForSearch(chunks[index]);
+    const weight = Math.max(normalized.length, 1);
     weights.set(index, weight);
     totalWeight += weight;
   }
@@ -763,13 +701,14 @@ function buildTimedTokens(text: string, startTime: number, endTime: number): Tim
   if (weights.size === 0 || totalWeight === 0) {
     return chunks.map((chunk) => ({
       text: chunk,
+      tokenNorm: normalizeForSearch(chunk),
       start: startTime,
       end: endTime,
       highlightable: false,
     }));
   }
 
-  const tokens: TimedToken[] = [];
+  const tokens: SubtitleToken[] = [];
   let cursor = startTime;
   let lastHighlightableIndex = -1;
 
@@ -780,6 +719,7 @@ function buildTimedTokens(text: string, startTime: number, endTime: number): Tim
     if (!weight) {
       tokens.push({
         text: chunk,
+        tokenNorm: normalizeForSearch(chunk),
         start: cursor,
         end: cursor,
         highlightable: false,
@@ -792,6 +732,7 @@ function buildTimedTokens(text: string, startTime: number, endTime: number): Tim
 
     tokens.push({
       text: chunk,
+      tokenNorm: normalizeForSearch(chunk),
       start: tokenStart,
       end: tokenEnd,
       highlightable: true,
@@ -810,80 +751,75 @@ function buildTimedTokens(text: string, startTime: number, endTime: number): Tim
 
   return tokens;
 }
-
-function parseApiTimedTokens(value: unknown): TimedToken[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const parsed: TimedToken[] = [];
-
-  for (let index = 0; index < value.length; index += 1) {
-    const row = value[index];
-
-    if (typeof row !== "object" || row === null) {
-      continue;
-    }
-
-    const token = (row as TimedTokenApiRow).token;
-    const start = (row as TimedTokenApiRow).start_time;
-    const end = (row as TimedTokenApiRow).end_time;
-
-    if (typeof token !== "string" || typeof start !== "number" || typeof end !== "number") {
-      continue;
-    }
-
-    const trimmed = token.trim();
-    if (!trimmed) {
-      continue;
-    }
-
-    parsed.push({
-      text: trimmed,
-      start,
-      end,
-      highlightable: true,
-    });
-  }
-
-  return parsed;
-}
-
-function findLastHighlightableIndex(tokens: TimedToken[]): number {
-  for (let index = tokens.length - 1; index >= 0; index -= 1) {
-    if (tokens[index].highlightable) {
-      return index;
-    }
-  }
-
-  return -1;
-}
-
-function findMatchedTokenStart(tokens: TimedToken[], normalizedQueryTerms: string[]): number | null {
-  if (normalizedQueryTerms.length === 0) {
+function parseChunkContext(value: unknown): ChunkContext | null {
+  if (typeof value !== "object" || value === null) {
     return null;
   }
 
-  for (const token of tokens) {
-    if (!token.highlightable) {
-      continue;
-    }
+  const chunkId = (value as { chunkId?: unknown }).chunkId;
+  const videoId = (value as { videoId?: unknown }).videoId;
+  const chunkStartSec = (value as { chunkStartSec?: unknown }).chunkStartSec;
+  const chunkEndSec = (value as { chunkEndSec?: unknown }).chunkEndSec;
+  const tokenCount = (value as { tokenCount?: unknown }).tokenCount;
+  const tokens = (value as { tokens?: unknown }).tokens;
 
-    const normalizedToken = normalizeForSearch(token.text.trim());
-    if (!normalizedToken) {
-      continue;
-    }
-
-    const matched = normalizedQueryTerms.some(
-      (term) => normalizedToken.includes(term) || term.includes(normalizedToken),
-    );
-
-    if (matched) {
-      return token.start;
-    }
+  if (
+    typeof chunkId !== "string" ||
+    typeof videoId !== "string" ||
+    typeof chunkStartSec !== "number" ||
+    typeof chunkEndSec !== "number" ||
+    typeof tokenCount !== "number" ||
+    !Array.isArray(tokens)
+  ) {
+    return null;
   }
 
-  return null;
+  const parsedTokens = tokens
+    .map((token) => parseContextToken(token))
+    .filter((token): token is SearchTimedToken => token !== null)
+    .sort((left, right) => left.idx - right.idx);
+
+  return {
+    chunkId,
+    videoId,
+    chunkStartSec,
+    chunkEndSec,
+    tokenCount,
+    tokens: parsedTokens,
+  };
+}
+
+function parseContextToken(value: unknown): SearchTimedToken | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+
+  const idx = (value as { idx?: unknown }).idx;
+  const token = (value as { token?: unknown }).token;
+  const tokenNorm = (value as { tokenNorm?: unknown; token_norm?: unknown }).tokenNorm ??
+    (value as { token_norm?: unknown }).token_norm;
+  const startSec = (value as { startSec?: unknown; start_sec?: unknown }).startSec ??
+    (value as { start_sec?: unknown }).start_sec;
+  const endSec = (value as { endSec?: unknown; end_sec?: unknown }).endSec ??
+    (value as { end_sec?: unknown }).end_sec;
+
+  if (
+    typeof idx !== "number" ||
+    typeof token !== "string" ||
+    typeof tokenNorm !== "string" ||
+    typeof startSec !== "number" ||
+    typeof endSec !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    idx,
+    token,
+    tokenNorm,
+    startSec,
+    endSec,
+  };
 }
 
 function parseYouTubeMessage(rawData: unknown): {
@@ -935,6 +871,14 @@ function clampIndex(value: number, length: number): number {
   }
 
   return Math.min(Math.max(value, 0), length - 1);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+
+  return Math.min(Math.max(value, min), max);
 }
 
 function formatTime(totalSeconds: number): string {

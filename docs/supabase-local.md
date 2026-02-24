@@ -8,10 +8,6 @@
 - Studio: `http://127.0.0.1:56423`
 - Mailpit: `http://127.0.0.1:56424`
 
-## Prerequisites
-- Docker Desktop 실행 중
-- Supabase CLI 설치 (`supabase --version`)
-
 ## Commands
 ```bash
 pnpm supabase:start
@@ -26,21 +22,30 @@ pnpm supabase:stop
 - migration 재적용
 - `supabase/seed.sql` 실행
 
-## Applied Migration
+## Applied Migrations
 - `supabase/migrations/20260223012749_timed_subtitle_v2_schema.sql`
-- 생성 테이블:
-  - `public.transcript_segments`
-  - `public.video_chunks`
+- `supabase/migrations/20260224023200_search_chunks_v1_optimization.sql`
+- `supabase/migrations/20260224024700_search_chunks_v1_term_index_lookup.sql`
 
-## Optional: Next.js env for Supabase client
-로컬 스택 실행 후 아래 출력을 복사해서 `.env.local`에 반영합니다.
+## Core Tables
+- `public.videos`
+- `public.segments`
+- `public.chunks`
+- `public.chunk_terms`
+- `public.chunk_tokens`
+- `public.search_feedback_events`
+- `public.ranking_config`
 
-```bash
-pnpm supabase:env
-```
+## Key Functions
+- `public.search_chunks_v1(text, integer, double precision)`
+- `public.get_chunk_context_v1(uuid)`
+- `public.explain_search_chunks_v1(text, integer, double precision)`
+- `public.scale_search_dataset(integer)`
 
-필수 권장 키:
-- `NEXT_PUBLIC_SUPABASE_URL` = `API_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` = `ANON_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY` = `SERVICE_ROLE_KEY`
-- `SUPABASE_DB_URL` = `DB_URL`
+## Optional: Next.js env
+`pnpm supabase:env` 출력 값을 `.env.local`에 반영합니다.
+필수 키:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_DB_URL`

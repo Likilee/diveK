@@ -23,12 +23,12 @@ export function SearchResultCard({ result }: SearchResultCardProps) {
     <button type="button" className="result-card" onClick={onNavigateToPlayer}>
       <div className="result-card-topline">
         <span className="chip">{result.videoId}</span>
-        <span className="score">score {result.score.toFixed(2)}</span>
+        <span className="score">score {result.finalScore.toFixed(2)}</span>
       </div>
       <p className="snippet">{renderHighlightedSnippet(result.snippet, result.matchedTerms)}</p>
       <div className="result-meta">
         <span>
-          {formatTime(result.startTime)} - {formatTime(result.endTime)}
+          {formatTime(result.chunkStartSec)} - {formatTime(result.chunkEndSec)}
         </span>
         <span className="jump-link">클립 열기</span>
       </div>

@@ -13,17 +13,29 @@ export type CanonicalTranscriptSegment = {
   endTime: number;
   duration: number;
   text: string;
+  normText: string;
+  tokenCount: number;
 };
 
-export type ChunkWithTiming = {
+export type ChunkTerm = {
+  term: string;
+  firstHitSec: number;
+  hitCount: number;
+  positions: number[];
+};
+
+export type ChunkWithSearchIndex = {
   videoId: string;
+  chunkIndex: number;
   startTime: number;
   endTime: number;
   segmentStartSeq: number;
   segmentEndSeq: number;
   fullText: string;
-  timedTokens: TimedToken[];
-  keywords: string[];
+  normText: string;
+  tokenCount: number;
+  tokens: TimedToken[];
+  terms: ChunkTerm[];
 };
 
 export type IngestionCheckpoint = {

@@ -226,6 +226,11 @@ export function normalizeTranscriptSegments(
       continue;
     }
 
+    const normText = normalizeSearchText(row.text);
+    if (!normText) {
+      continue;
+    }
+
     normalized.push({
       videoId,
       seq: normalized.length,
@@ -233,6 +238,8 @@ export function normalizeTranscriptSegments(
       endTime,
       duration: row.duration,
       text: row.text,
+      normText,
+      tokenCount: splitTerms(normText).length,
     });
   }
 
@@ -249,4 +256,16 @@ function sanitizeNumber(value: unknown): number {
   }
 
   return value;
+}
+
+function normalizeSearchText(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^0-9a-z가-힣\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitTerms(input: string): string[] {
+  return input.split(/\s+/).filter(Boolean);
 }

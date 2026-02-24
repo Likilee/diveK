@@ -3,6 +3,7 @@ import { buildSlidingWindowChunks } from "@/lib/pipeline/chunker";
 import type { CanonicalTranscriptSegment } from "@/lib/pipeline/types";
 
 function segment(seq: number, startTime: number, endTime: number, text: string): CanonicalTranscriptSegment {
+  const normText = text.toLowerCase().replace(/[^0-9a-z가-힣\s]/g, " ").replace(/\s+/g, " ").trim();
   return {
     videoId: "video-a",
     seq,
@@ -10,6 +11,8 @@ function segment(seq: number, startTime: number, endTime: number, text: string):
     endTime,
     duration: endTime - startTime,
     text,
+    normText,
+    tokenCount: normText.split(/\s+/).filter(Boolean).length,
   };
 }
 
@@ -40,6 +43,7 @@ describe("buildSlidingWindowChunks", () => {
       startTime: 10,
       endTime: 20,
     });
-    expect(chunks[1].timedTokens.length).toBeGreaterThan(0);
+    expect(chunks[1].tokens.length).toBeGreaterThan(0);
+    expect(chunks[1].terms.length).toBeGreaterThan(0);
   });
 });

@@ -1,7 +1,15 @@
-import type { VideoChunk } from "@/types/search";
+export const RELEVANCE_WEIGHTS = {
+  keyword: 0.55,
+  text: 0.3,
+  coverage: 0.15,
+} as const;
 
-const KEYWORD_WEIGHT = 0.7;
-const TRIGRAM_WEIGHT = 0.3;
+export type RelevanceScoreBreakdown = {
+  keywordScore: number;
+  textScore: number;
+  coverageScore: number;
+  finalScore: number;
+};
 
 export function tokenizeQuery(query: string): string[] {
   return Array.from(new Set(normalizeForSearch(query).split(" ").filter(Boolean)));
@@ -10,73 +18,77 @@ export function tokenizeQuery(query: string): string[] {
 export function normalizeForSearch(input: string): string {
   return input
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/[^0-9a-z가-힣\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-export function rankChunk(chunk: VideoChunk, query: string): {
-  score: number;
+export function computeCoverageScore(input: {
+  termMatchCount: number;
+  termHitCount: number;
+  queryTermCount: number;
+  tokenCount: number;
+}): number {
+  const queryCoverage = ratio(input.termMatchCount, input.queryTermCount);
+  const localDensity = Math.min(ratio(input.termHitCount, input.tokenCount), 1);
+
+  return clamp01(queryCoverage * 0.65 + localDensity * 0.35);
+}
+
+export function combineRelevanceScores(input: {
   keywordScore: number;
-  trigramScore: number;
-  matchedTerms: string[];
-} {
-  const queryTerms = tokenizeQuery(query);
+  textScore: number;
+  coverageScore: number;
+}): RelevanceScoreBreakdown {
+  const keywordScore = clamp01(input.keywordScore);
+  const textScore = clamp01(input.textScore);
+  const coverageScore = clamp01(input.coverageScore);
 
-  if (queryTerms.length === 0) {
-    return { score: 0, keywordScore: 0, trigramScore: 0, matchedTerms: [] };
-  }
-
-  const normalizedKeywordSet = new Set(chunk.keywords.map(normalizeForSearch));
-  const normalizedText = normalizeForSearch(chunk.fullText);
-
-  const matchedTerms = queryTerms.filter(
-    (term) => normalizedKeywordSet.has(term) || normalizedText.includes(term),
-  );
-
-  const keywordScore = matchedTerms.length / queryTerms.length;
-  const trigramScore = trigramSimilarity(normalizedText, normalizeForSearch(query));
-  const score = keywordScore * KEYWORD_WEIGHT + trigramScore * TRIGRAM_WEIGHT;
+  const finalScore =
+    keywordScore * RELEVANCE_WEIGHTS.keyword +
+    textScore * RELEVANCE_WEIGHTS.text +
+    coverageScore * RELEVANCE_WEIGHTS.coverage;
 
   return {
-    score,
     keywordScore,
-    trigramScore,
-    matchedTerms,
+    textScore,
+    coverageScore,
+    finalScore,
   };
 }
 
-function trigramSimilarity(a: string, b: string): number {
-  const setA = toTrigrams(a);
-  const setB = toTrigrams(b);
+export function computeIntervalIoU(left: { startSec: number; endSec: number }, right: { startSec: number; endSec: number }): number {
+  const intersectionStart = Math.max(left.startSec, right.startSec);
+  const intersectionEnd = Math.min(left.endSec, right.endSec);
+  const intersection = Math.max(0, intersectionEnd - intersectionStart);
 
-  if (setA.size === 0 || setB.size === 0) {
+  if (intersection <= 0) {
     return 0;
   }
 
-  let intersection = 0;
+  const leftLength = Math.max(0, left.endSec - left.startSec);
+  const rightLength = Math.max(0, right.endSec - right.startSec);
+  const union = leftLength + rightLength - intersection;
 
-  for (const gram of setA) {
-    if (setB.has(gram)) {
-      intersection += 1;
-    }
+  if (union <= 0) {
+    return 0;
   }
 
-  const union = setA.size + setB.size - intersection;
-  return union === 0 ? 0 : intersection / union;
+  return intersection / union;
 }
 
-function toTrigrams(value: string): Set<string> {
-  const compact = value.replace(/\s+/g, " ").trim();
-
-  if (compact.length < 3) {
-    return compact ? new Set([compact]) : new Set();
+function ratio(numerator: number, denominator: number): number {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+    return 0;
   }
 
-  const grams = new Set<string>();
-  for (let index = 0; index <= compact.length - 3; index += 1) {
-    grams.add(compact.slice(index, index + 3));
+  return numerator / denominator;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
   }
 
-  return grams;
+  return Math.min(Math.max(value, 0), 1);
 }

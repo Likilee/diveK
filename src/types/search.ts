@@ -1,27 +1,38 @@
 export type TimedToken = {
+  idx: number;
   token: string;
-  startTime: number;
-  endTime: number;
-};
-
-export type VideoChunk = {
-  id: string;
-  videoId: string;
-  startTime: number;
-  endTime: number;
-  fullText: string;
-  keywords: string[];
-  timedTokens: TimedToken[];
+  tokenNorm: string;
+  startSec: number;
+  endSec: number;
 };
 
 export type SearchResult = {
   id: string;
   chunkId: string;
   videoId: string;
-  startTime: number;
-  endTime: number;
+  chunkStartSec: number;
+  chunkEndSec: number;
+  anchorSec: number;
+  recommendedStartSec: number;
   snippet: string;
   fullText: string;
-  score: number;
+  normText: string;
+  tokenCount: number;
+  termMatchCount: number;
+  termHitCount: number;
   matchedTerms: string[];
+  keywordScore: number;
+  textScore: number;
+  coverageScore: number;
+  finalScore: number;
+  rankReason: string;
+};
+
+export type ChunkContext = {
+  chunkId: string;
+  videoId: string;
+  chunkStartSec: number;
+  chunkEndSec: number;
+  tokenCount: number;
+  tokens: TimedToken[];
 };

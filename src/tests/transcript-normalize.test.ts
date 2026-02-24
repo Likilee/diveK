@@ -18,8 +18,24 @@ describe("normalizeTranscriptSegments", () => {
       startTime: 0,
       endTime: 2,
       text: "negative-offset",
+      normText: "negative offset",
+      tokenCount: 2,
     });
-    expect(normalized[1]).toMatchObject({ seq: 1, startTime: 1, endTime: 3, text: "first" });
-    expect(normalized[2]).toMatchObject({ seq: 2, startTime: 4, endTime: 6, text: "second" });
+    expect(normalized[1]).toMatchObject({
+      seq: 1,
+      startTime: 1,
+      endTime: 3,
+      text: "first",
+      normText: "first",
+      tokenCount: 1,
+    });
+    expect(normalized[2]).toMatchObject({
+      seq: 2,
+      startTime: 4,
+      endTime: 6,
+      text: "second",
+      normText: "second",
+      tokenCount: 1,
+    });
   });
 });

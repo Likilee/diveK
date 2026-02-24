@@ -1,60 +1,79 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchChunks } from "@/lib/search/search-service";
+import { clampLimit, clampPreroll, searchChunks } from "@/lib/search/search-service";
 import type { SearchResult } from "@/types/search";
 
 export const dynamic = "force-dynamic";
 
-type SearchResponse = {
+type SearchSuccessResponse = {
   query: string;
+  limit: number;
+  preroll: number;
   count: number;
-  results: Array<
-    SearchResult & {
-      chunk_id: string;
-      video_id: string;
-      start_time: number;
-      end_time: number;
-    }
-  >;
+  results: SearchResult[];
+};
+
+type SearchErrorResponse = {
+  error: string;
 };
 
 export async function GET(request: NextRequest) {
   const query = request.nextUrl.searchParams.get("q")?.trim() ?? "";
-  const limitParam = request.nextUrl.searchParams.get("limit");
-  const limit = clampLimit(limitParam);
 
   if (!query) {
-    return NextResponse.json<SearchResponse>({
-      query,
-      count: 0,
-      results: [],
-    });
+    return NextResponse.json<SearchErrorResponse>(
+      { error: "q is required and must be non-empty" },
+      { status: 400 },
+    );
   }
 
-  const ranked = await searchChunks(query, limit);
+  const parsedLimit = parseOptionalNumber(request.nextUrl.searchParams.get("limit"));
+  if (parsedLimit.invalid) {
+    return NextResponse.json<SearchErrorResponse>(
+      { error: "limit must be a valid number" },
+      { status: 400 },
+    );
+  }
 
-  return NextResponse.json<SearchResponse>({
+  const parsedPreroll = parseOptionalNumber(request.nextUrl.searchParams.get("preroll"));
+  if (parsedPreroll.invalid) {
+    return NextResponse.json<SearchErrorResponse>(
+      { error: "preroll must be a valid number" },
+      { status: 400 },
+    );
+  }
+
+  const limit = clampLimit(parsedLimit.value ?? 20);
+  const preroll = clampPreroll(parsedPreroll.value ?? 4);
+  const ranked = await searchChunks(query, limit, preroll);
+
+  return NextResponse.json<SearchSuccessResponse>({
     query,
+    limit,
+    preroll,
     count: ranked.length,
-    results: ranked.map((row) => ({
-      ...row,
-      chunk_id: row.chunkId,
-      video_id: row.videoId,
-      start_time: row.startTime,
-      end_time: row.endTime,
-    })),
+    results: ranked,
   });
 }
 
-function clampLimit(value: string | null): number {
-  if (!value) {
-    return 20;
+function parseOptionalNumber(value: string | null): { value: number | null; invalid: boolean } {
+  if (value === null) {
+    return { value: null, invalid: false };
   }
 
-  const parsed = Number.parseInt(value, 10);
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { value: null, invalid: true };
+  }
+
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
+    return { value: null, invalid: true };
+  }
+
+  const parsed = Number(trimmed);
 
   if (!Number.isFinite(parsed)) {
-    return 20;
+    return { value: null, invalid: true };
   }
 
-  return Math.min(Math.max(parsed, 1), 50);
+  return { value: parsed, invalid: false };
 }

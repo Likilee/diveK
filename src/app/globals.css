@@ -354,62 +354,52 @@ body {
 
 .subtitle-board {
   margin-top: 0.88rem;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 12px;
-  background: rgba(58, 58, 64, 0.95);
-  padding: clamp(1.05rem, 2.8vw, 1.8rem);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.25rem 0;
   display: grid;
-  gap: 0.6rem;
+  gap: 0.35rem;
 }
 
 .subtitle-list {
   display: grid;
-  gap: 0.48rem;
+  gap: 0.2rem;
 }
 
-.subtitle-line-button {
-  width: 100%;
+.subtitle-line-row {
+  margin: 0;
+  padding: 0;
   text-align: left;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 11px;
-  background: rgba(28, 31, 43, 0.78);
-  padding: 0.62rem 0.72rem;
-  cursor: pointer;
-  transition: transform 180ms ease, border-color 180ms ease, background-color 180ms ease;
+  border: 0;
+  background: transparent;
 }
 
-.subtitle-line-button:hover,
-.subtitle-line-button:focus-visible {
-  transform: translateY(-1px);
-  border-color: rgba(250, 204, 21, 0.44);
-}
-
-.subtitle-line-button.is-active {
-  border-color: rgba(250, 204, 21, 0.56);
-  background: rgba(50, 56, 77, 0.9);
+.subtitle-line-row:not(.is-active) .subtitle-line {
+  opacity: 0.84;
 }
 
 .subtitle-line-time {
-  display: block;
-  margin-bottom: 0.34rem;
-  font-size: 0.76rem;
+  display: inline-block;
+  margin-right: 0.45rem;
+  font-size: 0.8rem;
   letter-spacing: 0.04em;
   color: rgba(203, 213, 225, 0.95);
 }
 
 .subtitle-line {
-  display: block;
+  display: inline;
   margin: 0;
   text-align: left;
   color: #f8fafc;
   font-family: var(--font-heading), "Atkinson Hyperlegible", sans-serif;
-  font-size: clamp(1.4rem, 4.6vw, 2.2rem);
+  font-size: clamp(1.3rem, 4.2vw, 2.05rem);
   line-height: 1.24;
   letter-spacing: -0.02em;
 }
 
-.subtitle-line-button.is-active .subtitle-line {
-  font-size: clamp(1.62rem, 5.8vw, 2.8rem);
+.subtitle-line-row.is-active .subtitle-line {
+  opacity: 1;
 }
 
 .subtitle-empty {
@@ -419,22 +409,12 @@ body {
   text-align: center;
 }
 
-.subtitle-token {
-  transition: background-color 180ms ease, color 180ms ease;
-}
-
-.subtitle-mark-query {
-  color: #ffd9e3;
-  border-bottom: 2px solid rgba(244, 63, 94, 0.7);
-}
-
-.subtitle-mark-active {
-  color: #123175;
+.subtitle-keyword {
+  color: #102f74;
   font-weight: 700;
-  background: #fefc24;
+  background: #fef08a;
   border-radius: 0.28em;
   padding: 0 0.18em;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.24);
 }
 
 .subtitle-progress {

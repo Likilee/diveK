@@ -1,5 +1,5 @@
-import { extractKeywords } from "@/lib/pipeline/keywords";
-import type { CanonicalTranscriptSegment, ChunkWithTiming } from "@/lib/pipeline/types";
+import { normalizeToken } from "@/lib/pipeline/keywords";
+import type { CanonicalTranscriptSegment, ChunkTerm, ChunkWithSearchIndex } from "@/lib/pipeline/types";
 import type { TimedToken } from "@/types/search";
 
 export type ChunkingOptions = {
@@ -12,7 +12,7 @@ export function buildSlidingWindowChunks(
   videoId: string,
   segments: CanonicalTranscriptSegment[],
   options: ChunkingOptions = {},
-): ChunkWithTiming[] {
+): ChunkWithSearchIndex[] {
   if (segments.length === 0) {
     return [];
   }
@@ -29,7 +29,7 @@ export function buildSlidingWindowChunks(
   const minStart = ordered[0].startTime;
   const maxEnd = ordered[ordered.length - 1].endTime;
 
-  const chunks: ChunkWithTiming[] = [];
+  const chunks: ChunkWithSearchIndex[] = [];
   const seen = new Set<string>();
 
   for (let windowStart = minStart; windowStart <= maxEnd; windowStart += stepSeconds) {
@@ -44,27 +44,40 @@ export function buildSlidingWindowChunks(
 
     const segmentStartSeq = inWindow[0].seq;
     const segmentEndSeq = inWindow[inWindow.length - 1].seq;
-    const key = `${videoId}:${segmentStartSeq}:${segmentEndSeq}`;
+    const dedupeKey = `${videoId}:${segmentStartSeq}:${segmentEndSeq}`;
 
-    if (seen.has(key)) {
+    if (seen.has(dedupeKey)) {
       continue;
     }
 
-    seen.add(key);
+    seen.add(dedupeKey);
 
     const fullText = inWindow.map((segment) => segment.text.trim()).filter(Boolean).join(" ");
-    const timedTokens = buildTimedTokensFromSegments(inWindow);
-    const keywords = extractKeywords(fullText, { stopwords: options.stopwords });
+    const normText = normalizeSearchText(fullText);
+
+    if (!normText) {
+      continue;
+    }
+
+    const tokens = buildTimedTokensFromSegments(inWindow);
+    if (tokens.length === 0) {
+      continue;
+    }
+
+    const terms = buildChunkTerms(tokens);
 
     chunks.push({
       videoId,
+      chunkIndex: chunks.length,
       startTime: inWindow[0].startTime,
       endTime: inWindow[inWindow.length - 1].endTime,
       segmentStartSeq,
       segmentEndSeq,
       fullText,
-      timedTokens,
-      keywords,
+      normText,
+      tokenCount: tokens.length,
+      tokens,
+      terms,
     });
   }
 
@@ -81,30 +94,71 @@ export function buildTimedTokensFromSegments(segments: CanonicalTranscriptSegmen
       continue;
     }
 
-    const weights = words.map((word) => Math.max(word.length, 1));
+    const normalizedWords = words
+      .map((word) => ({
+        raw: word,
+        norm: normalizeToken(word),
+      }))
+      .filter((row) => row.norm.length > 0);
+
+    if (normalizedWords.length === 0) {
+      continue;
+    }
+
+    const weights = normalizedWords.map((row) => Math.max(row.norm.length, 1));
     const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
     const segmentDuration = Math.max(segment.endTime - segment.startTime, 0.05);
 
     let cursor = segment.startTime;
 
-    for (let index = 0; index < words.length; index += 1) {
+    for (let index = 0; index < normalizedWords.length; index += 1) {
+      const word = normalizedWords[index];
       const weight = weights[index];
       const span = (segmentDuration * weight) / totalWeight;
-      const startTime = cursor;
-      const isLast = index === words.length - 1;
-      const endTime = isLast ? segment.endTime : Math.min(segment.endTime, startTime + span);
+      const startSec = cursor;
+      const isLast = index === normalizedWords.length - 1;
+      const endSec = isLast ? segment.endTime : Math.min(segment.endTime, startSec + span);
 
       tokens.push({
-        token: words[index],
-        startTime,
-        endTime,
+        idx: tokens.length,
+        token: word.raw,
+        tokenNorm: word.norm,
+        startSec,
+        endSec,
       });
 
-      cursor = endTime;
+      cursor = endSec;
     }
   }
 
   return tokens;
+}
+
+function buildChunkTerms(tokens: TimedToken[]): ChunkTerm[] {
+  const termMap = new Map<string, { firstHitSec: number; positions: number[] }>();
+
+  for (const token of tokens) {
+    const current = termMap.get(token.tokenNorm);
+    if (!current) {
+      termMap.set(token.tokenNorm, {
+        firstHitSec: token.startSec,
+        positions: [token.idx],
+      });
+      continue;
+    }
+
+    current.firstHitSec = Math.min(current.firstHitSec, token.startSec);
+    current.positions.push(token.idx);
+  }
+
+  return Array.from(termMap.entries())
+    .map(([term, value]) => ({
+      term,
+      firstHitSec: value.firstHitSec,
+      hitCount: value.positions.length,
+      positions: value.positions,
+    }))
+    .sort((left, right) => left.term.localeCompare(right.term, "ko"));
 }
 
 function tokenizeWords(text: string): string[] {
@@ -115,4 +169,12 @@ function tokenizeWords(text: string): string[] {
   }
 
   return tokens.map((token) => token.trim()).filter(Boolean);
+}
+
+function normalizeSearchText(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^0-9a-z가-힣\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
