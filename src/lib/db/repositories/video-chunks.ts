@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CanonicalTranscriptSegment, ChunkWithSearchIndex } from "@/lib/pipeline/types";
-import type { ChunkContext, TimedToken } from "@/types/search";
+import type { ChunkContext, TimedToken, VideoSegment } from "@/types/search";
 import { retryWithBackoff } from "@/lib/utils/retry";
 import type { RetryOptions } from "@/lib/utils/retry";
 
@@ -182,6 +182,29 @@ export async function searchChunksV1(
   }
 
   return (data ?? []) as SearchChunkCandidateRow[];
+}
+
+export async function getVideoSegments(
+  client: SupabaseClient,
+  videoId: string,
+): Promise<VideoSegment[]> {
+  const { data, error } = await client
+    .from("segments")
+    .select("seq, start_sec, end_sec, text, norm_text")
+    .eq("video_id", videoId)
+    .order("seq", { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to load video segments: ${error.message}`);
+  }
+
+  return (data ?? []).map((row) => ({
+    seq: row.seq as number,
+    startSec: row.start_sec as number,
+    endSec: row.end_sec as number,
+    text: row.text as string,
+    normText: row.norm_text as string,
+  }));
 }
 
 export async function getChunkContext(

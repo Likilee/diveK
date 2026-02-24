@@ -36,3 +36,11 @@ export type ChunkContext = {
   tokenCount: number;
   tokens: TimedToken[];
 };
+
+export type VideoSegment = {
+  seq: number;
+  startSec: number;
+  endSec: number;
+  text: string;
+  normText: string;
+};

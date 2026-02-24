@@ -1,6 +1,7 @@
 import { getSupabaseAdminClient } from "@/lib/db/supabase-admin";
 import {
   getChunkContext as getChunkContextFromDb,
+  getVideoSegments as getVideoSegmentsFromDb,
   searchChunksV1,
   type SearchChunkCandidateRow,
 } from "@/lib/db/repositories/video-chunks";
@@ -12,7 +13,7 @@ import {
   tokenizeQuery,
 } from "@/lib/search/ranking";
 import { buildSnippet } from "@/lib/search/snippet";
-import type { ChunkContext, SearchResult } from "@/types/search";
+import type { ChunkContext, SearchResult, VideoSegment } from "@/types/search";
 
 const MAX_LIMIT = 50;
 const MIN_LIMIT = 1;
@@ -86,6 +87,19 @@ export async function getChunkContext(chunkId: string): Promise<ChunkContext | n
     return await getChunkContextFromDb(client, chunkId);
   } catch {
     return null;
+  }
+}
+
+export async function getVideoSegments(videoId: string): Promise<VideoSegment[]> {
+  if (!videoId) {
+    return [];
+  }
+
+  try {
+    const client = getSupabaseAdminClient();
+    return await getVideoSegmentsFromDb(client, videoId);
+  } catch {
+    return [];
   }
 }
 

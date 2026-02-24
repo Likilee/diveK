@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeForSearch } from "@/lib/search/ranking";
-import type { ChunkContext, SearchResult, TimedToken as SearchTimedToken } from "@/types/search";
+import type { ChunkContext, SearchResult, TimedToken as SearchTimedToken, VideoSegment } from "@/types/search";
 
 type PlayerClientProps = {
   query: string;
@@ -109,6 +109,9 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
   const softAdjustedResultIdRef = useRef<string | null>(null);
   const contextCacheRef = useRef<Map<string, ChunkContext>>(new Map());
   const contextRequestRef = useRef<Map<string, Promise<ChunkContext | null>>>(new Map());
+  const segmentsCacheRef = useRef<Map<string, VideoSegment[]>>(new Map());
+  const segmentsRequestRef = useRef<Map<string, Promise<VideoSegment[]>>>(new Map());
+  const [videoSegments, setVideoSegments] = useState<VideoSegment[]>([]);
 
   const [currentIndex, setCurrentIndex] = useState(() => clampIndex(initialIndex, results.length));
   const [playbackTime, setPlaybackTime] = useState<number | null>(null);
@@ -147,7 +150,24 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
     [chunkContext],
   );
 
-  const subtitleTokens = contextSubtitleTokens.length > 0 ? contextSubtitleTokens : fallbackSubtitleTokens;
+  const segmentSubtitleTokens = useMemo(
+    () => mapSegmentsToSubtitleTokens(videoSegments),
+    [videoSegments],
+  );
+
+  const subtitleTokens = useMemo(() => {
+    if (segmentSubtitleTokens.length === 0) {
+      return contextSubtitleTokens.length > 0 ? contextSubtitleTokens : fallbackSubtitleTokens;
+    }
+    if (contextSubtitleTokens.length === 0 || !currentResult) {
+      return segmentSubtitleTokens;
+    }
+    const chunkStart = currentResult.chunkStartSec;
+    const chunkEnd = currentResult.chunkEndSec;
+    const before = segmentSubtitleTokens.filter(t => t.end <= chunkStart);
+    const after = segmentSubtitleTokens.filter(t => t.start >= chunkEnd);
+    return [...before, ...contextSubtitleTokens, ...after];
+  }, [segmentSubtitleTokens, contextSubtitleTokens, fallbackSubtitleTokens, currentResult]);
 
   const subtitleLines = useMemo(() => buildSubtitleLines(subtitleTokens), [subtitleTokens]);
   const activeLineIndex = useMemo(
@@ -314,6 +334,51 @@ export function PlayerClient({ query, initialIndex = 0, results }: PlayerClientP
       active = false;
     };
   }, [currentResultId]);
+
+  useEffect(() => {
+    if (!currentVideoId) {
+      return;
+    }
+
+    const cached = segmentsCacheRef.current.get(currentVideoId);
+    if (cached) {
+      setVideoSegments(cached);
+      return;
+    }
+
+    let active = true;
+    let request = segmentsRequestRef.current.get(currentVideoId);
+    if (!request) {
+      request = fetch(`/api/videos/${currentVideoId}/segments`, { cache: "no-store" })
+        .then(async (response) => {
+          if (!response.ok) {
+            return [];
+          }
+
+          const payload = (await response.json()) as { segments: VideoSegment[] };
+          return payload.segments ?? [];
+        })
+        .catch(() => [] as VideoSegment[])
+        .finally(() => {
+          segmentsRequestRef.current.delete(currentVideoId);
+        });
+
+      segmentsRequestRef.current.set(currentVideoId, request);
+    }
+
+    request.then((segments) => {
+      if (!active) {
+        return;
+      }
+
+      segmentsCacheRef.current.set(currentVideoId, segments);
+      setVideoSegments(segments);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [currentVideoId]);
 
   useEffect(() => {
     if (!currentVideoId || !currentResultId || !iframeRef.current) {
@@ -676,6 +741,16 @@ function mapContextTokensToSubtitleTokens(tokens: SearchTimedToken[]): SubtitleT
     tokenNorm: token.tokenNorm,
     start: token.startSec,
     end: token.endSec,
+    highlightable: true,
+  }));
+}
+
+function mapSegmentsToSubtitleTokens(segments: VideoSegment[]): SubtitleToken[] {
+  return segments.map((seg) => ({
+    text: seg.text,
+    tokenNorm: seg.normText,
+    start: seg.startSec,
+    end: seg.endSec,
     highlightable: true,
   }));
 }
