@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "supabase": {
+      "command": "bash",
+      "args": [
+        "-lc",
+        "set -a; source .env.local; set +a; SUPABASE_ACCESS_TOKEN=\"$SUPABASE_MCP_ACCESS_TOKEN\" pnpm exec mcp-server-supabase --project-ref \"$SUPABASE_MCP_PROJECT_REF\""
+      ]
+    }
+  }
+}
