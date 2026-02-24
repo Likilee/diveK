@@ -1,27 +1,14 @@
--- Search-performance-first schema (Phase 1 + Phase 2 readiness)
--- Breaking change by design: previous compatibility tables/functions are removed.
+-- Consolidated initial schema: 5-table search-first design
+-- Tables: videos, segments, chunks, chunk_terms, chunk_tokens
+-- Phase 2 readiness: search_feedback_events, ranking_config
+-- RPC: normalize_search_text, search_chunks_v1, get_chunk_context_v1, explain_search_chunks_v1, scale_search_dataset
 
 create extension if not exists pgcrypto with schema extensions;
 create extension if not exists pg_trgm with schema extensions;
 
--- Drop legacy compatibility surface.
-drop function if exists public.search_video_chunks(text, text[], integer);
-drop function if exists public.get_chunk_timed_tokens(uuid);
-drop function if exists public.get_chunk_context_v1(uuid);
-drop function if exists public.search_chunks_v1(text, integer, double precision);
-drop function if exists public.explain_search_chunks_v1(text, integer, double precision);
-drop function if exists public.normalize_search_text(text);
-drop function if exists public.scale_search_dataset(integer);
-
-drop table if exists public.chunk_tokens cascade;
-drop table if exists public.chunk_terms cascade;
-drop table if exists public.chunks cascade;
-drop table if exists public.segments cascade;
-drop table if exists public.videos cascade;
-drop table if exists public.search_feedback_events cascade;
-drop table if exists public.ranking_config cascade;
-drop table if exists public.video_chunks cascade;
-drop table if exists public.transcript_segments cascade;
+-- ============================================================
+-- Core tables
+-- ============================================================
 
 create table if not exists public.videos (
   id text primary key,
@@ -116,7 +103,10 @@ create table if not exists public.chunk_tokens (
 create index if not exists chunk_tokens_chunk_start_idx on public.chunk_tokens (chunk_id, start_sec);
 create index if not exists chunk_tokens_token_norm_chunk_idx on public.chunk_tokens (token_norm, chunk_id);
 
--- Phase 2 readiness: behavior events are collected but not consumed in ranking by default.
+-- ============================================================
+-- Phase 2 readiness: feedback events + ranking config
+-- ============================================================
+
 create table if not exists public.search_feedback_events (
   id bigserial primary key,
   event_type text not null,
@@ -166,6 +156,10 @@ values (
 )
 on conflict (key) do nothing;
 
+-- ============================================================
+-- Functions
+-- ============================================================
+
 create or replace function public.normalize_search_text(p_text text)
 returns text
 language sql
@@ -181,6 +175,7 @@ as $$
   );
 $$;
 
+-- search_chunks_v1: lateral-join version (term index lookup + trigram fallback for long queries)
 create or replace function public.search_chunks_v1(
   p_query text,
   p_limit integer default 20,
@@ -222,25 +217,49 @@ query_stats as (
   select greatest(count(*), 1)::double precision as query_term_count
   from query_terms
 ),
-term_candidates as (
+term_hits as (
   select
     ct.chunk_id,
-    array_agg(distinct ct.term order by ct.term) as matched_terms,
-    count(distinct ct.term)::integer as term_match_count,
-    sum(ct.hit_count)::integer as term_hit_count,
-    min(ct.first_hit_sec) as anchor_sec
-  from public.chunk_terms ct
-  join query_terms qt on qt.term = ct.term
-  group by ct.chunk_id
+    ct.term,
+    ct.first_hit_sec,
+    ct.hit_count
+  from query_terms qt
+  join lateral (
+    select
+      ct.chunk_id,
+      ct.term,
+      ct.first_hit_sec,
+      ct.hit_count
+    from public.chunk_terms ct
+    where ct.term = qt.term
+  ) ct on true
+),
+term_candidates as (
+  select
+    th.chunk_id,
+    array_agg(distinct th.term order by th.term) as matched_terms,
+    count(distinct th.term)::integer as term_match_count,
+    sum(th.hit_count)::integer as term_hit_count,
+    min(th.first_hit_sec) as anchor_sec
+  from term_hits th
+  group by th.chunk_id
 ),
 trigram_candidates as (
   select
     c.id as chunk_id,
     similarity(c.norm_text, normalized.query_text) as text_score
-  from public.chunks c
-  cross join normalized
-  where normalized.query_text <> ''
-    and c.norm_text % normalized.query_text
+  from normalized
+  join lateral (
+    select
+      c.id,
+      c.norm_text
+    from public.chunks c
+    where normalized.query_text <> ''
+      and char_length(normalized.query_text) >= 8
+      and c.norm_text % normalized.query_text
+    order by similarity(c.norm_text, normalized.query_text) desc
+    limit 300
+  ) c on true
 ),
 unioned as (
   select
@@ -266,7 +285,7 @@ capped as (
 ),
 scored as (
   select
-    c.id as chunk_id,
+    c.chunk_id,
     c.video_id,
     c.chunk_start_sec,
     c.chunk_end_sec,
@@ -283,9 +302,20 @@ scored as (
     query_stats.query_term_count,
     (capped.term_match_count::double precision / query_stats.query_term_count) as keyword_score
   from capped
-  join public.chunks c on c.id = capped.chunk_id
   cross join normalized
   cross join query_stats
+  join lateral (
+    select
+      c.id as chunk_id,
+      c.video_id,
+      c.chunk_start_sec,
+      c.chunk_end_sec,
+      c.full_text,
+      c.norm_text,
+      c.token_count
+    from public.chunks c
+    where c.id = capped.chunk_id
+  ) c on true
 )
 select
   scored.chunk_id,
@@ -612,6 +642,10 @@ begin
   return next;
 end;
 $$;
+
+-- ============================================================
+-- Grants
+-- ============================================================
 
 grant execute on function public.search_chunks_v1(text, integer, double precision)
   to anon, authenticated, service_role;

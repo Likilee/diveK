@@ -61,10 +61,12 @@ ingest
   .option("--checkpoint <path>", "Checkpoint path", DEFAULT_CHECKPOINT_PATH)
   .option("--max-retries <count>", "Max retries per batch", parseInteger, 4)
   .option("--retry-base-ms <ms>", "Retry base delay in ms", parseInteger, 250)
+  .option("--target <target>", "Database target: local or prod", "local")
   .action(
     async (options: {
       videoId?: string[];
       videoIdsFile?: string;
+      target: "local" | "prod";
       batchSize: number;
       checkpoint: string;
       maxRetries: number;
@@ -83,6 +85,7 @@ ingest
 
         const result = await runIngestionPipeline({
           videoIds,
+          target: options.target,
           batchSize: options.batchSize,
           checkpointPath: options.checkpoint,
           maxRetries: options.maxRetries,

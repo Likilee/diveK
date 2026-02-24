@@ -24,6 +24,7 @@
 .DS_Store
 *.pem
 .cache/
+.sisyphus/
 
 # debug
 npm-debug.log*

@@ -14,6 +14,7 @@ import { fetchCanonicalTranscriptSegments } from "@/lib/pipeline/transcript/fetc
 
 type IngestRunOptions = {
   videoIds: string[];
+  target?: "local" | "prod";
   batchSize?: number;
   checkpointPath?: string;
   maxRetries?: number;
@@ -35,7 +36,7 @@ export async function runIngestionPipeline(options: IngestRunOptions): Promise<I
 
   const checkpoint = await readCheckpoint(checkpointPath);
   const completed = new Set(checkpoint.completedVideoIds);
-  const client = getSupabaseAdminClient();
+  const client = getSupabaseAdminClient(options.target ?? "local");
 
   const processedVideoIds: string[] = [];
   const skippedVideoIds: string[] = [];
